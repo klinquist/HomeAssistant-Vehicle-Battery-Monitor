@@ -54,7 +54,7 @@ Raspberry Pi OS uses `systemd` by default. You can install a service with the in
 ```sh
 cd HomeAssistant-Vehicle-Battery-Monitor
 chmod +x scripts/install-systemd.sh
-./scripts/install-systemd.sh
+sudo ./scripts/install-systemd.sh
 ```
 
 Logs: `sudo journalctl -u vehicle-battery-monitor -f`
