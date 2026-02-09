@@ -38,5 +38,4 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 - Home Assistant cannot “prompt to name” devices when using pure MQTT discovery. The bridge publishes a default name (e.g. `BM6 aa:bb:cc:dd:ee:ff`). You can rename the device/entities in Home Assistant UI.
 - Devices are stored via retained MQTT messages under `bm6bm7/registry/#` (no device list in `config.json`).
 - If a device isn’t currently in range (e.g. vehicle is away), the bridge skips reads and marks it `offline` via availability.
-- If you’re running this from a copy on another machine (like a Pi), make sure you’ve updated that copy after changes here (e.g. `git pull`, or re-copy this repo folder).
 - Linux is the primary target (BlueZ via `node-ble`). macOS can work via the optional `@abandonware/noble` path.
