@@ -1,5 +1,7 @@
 # BM6/BM7 → Home Assistant (MQTT bridge)
 
+**Hardware note:** These monitors are often advertised under the **Ancel** brand and are widely available on AliExpress for roughly $20–40 each.
+
 This runs on a *separate* computer (near the BLE devices). It scans for BM6/BM7 (BM300 Pro) monitors, reads voltage / battery % / temperature, and publishes them to Home Assistant via **MQTT Discovery**.
 
 ## Home Assistant setup
@@ -10,7 +12,7 @@ This runs on a *separate* computer (near the BLE devices). It scans for BM6/BM7 
 ## Bridge setup (on the BLE machine)
 
 ```sh
-cd homeassistant/mqtt-bridge
+cd HomeAssistant-Vehicle-Battery-Monitor
 npm install
 cp config.example.json config.json
 node src/index.js
@@ -34,5 +36,5 @@ node src/index.js
 - Home Assistant cannot “prompt to name” devices when using pure MQTT discovery. The bridge publishes a default name (e.g. `BM6 aa:bb:cc:dd:ee:ff`). You can rename the device/entities in Home Assistant UI.
 - Devices are stored via retained MQTT messages under `bm6bm7/registry/#` (no device list in `config.json`).
 - If a device isn’t currently in range (e.g. vehicle is away), the bridge skips reads and marks it `offline` via availability.
-- If you’re running this from a copy on another machine (like a Pi), make sure you’ve updated that copy after changes here (e.g. `git pull`, or re-copy the `homeassistant/mqtt-bridge/` folder).
+- If you’re running this from a copy on another machine (like a Pi), make sure you’ve updated that copy after changes here (e.g. `git pull`, or re-copy this repo folder).
 - Linux is the primary target (BlueZ via `node-ble`). macOS can work via the optional `@abandonware/noble` path.
