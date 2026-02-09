@@ -18,6 +18,8 @@ cp config.example.json config.json
 node src/index.js
 ```
 
+Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any username/password before starting the bridge.
+
 ## Usage (from Home Assistant)
 
 - After the bridge starts, it publishes two MQTT-discovered buttons in Home Assistant:
