@@ -2,7 +2,7 @@
 
 Supports the **Ancel** BM6 or BM7 (BM300 Pro) Bluetooth battery monitors, commonly found on Amazon or AliExpress for roughly $20–40 each.
 
-This runs on a *separate* computer (near the BLE devices). It scans for BM6/BM7 (BM300 Pro) monitors, reads voltage / battery % / temperature, and publishes them to Home Assistant via **MQTT Discovery**.
+This runs on a *separate* computer (near the BLE devices), and is intended to run well on a Raspberry Pi. It scans for BM6/BM7 (BM300 Pro) monitors, reads voltage / battery % / temperature, and publishes them to Home Assistant via **MQTT Discovery**.
 
 ## Home Assistant setup
 
