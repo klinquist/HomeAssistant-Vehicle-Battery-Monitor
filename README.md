@@ -20,6 +20,18 @@ node src/index.js
 
 Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any username/password before starting the bridge.
 
+### `config.json` options
+
+- `mqtt.url`: MQTT broker URL (usually your Home Assistant host).
+- `mqtt.username` / `mqtt.password`: MQTT credentials if required.
+- `mqtt.discoveryPrefix`: Home Assistant MQTT discovery prefix (default `homeassistant`).
+- `mqtt.clientId`: MQTT client ID for this bridge.
+- `scanMs`: BLE scan duration in ms when you press “Scan BM6/BM7”.
+- `connectScanMs`: How long to scan for known devices before polling.
+- `readTimeoutMs`: Timeout waiting for a device to respond.
+- `pollIntervalSec`: How often to poll all known devices (default once per day).
+- `failureBackoffSec`: Backoff time after a failed read before trying that device again.
+
 ## Usage (from Home Assistant)
 
 - After the bridge starts, it publishes two MQTT-discovered buttons in Home Assistant:
@@ -32,6 +44,20 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
   - In Home Assistant → MQTT → “Listen to a topic”, listen on `bm6bm7/bridge/#` and `bm6bm7/registry/#`.
   - Watch the bridge process logs (e.g. `journalctl -u <your-service>` if you run it as a systemd service).
     - Logs now include pre-scan timing, per-device read attempts, and retries.
+
+This is meant to run continuously under a process manager like `pm2` (or systemd).
+
+## Autostart (Raspberry Pi)
+
+Raspberry Pi OS uses `systemd` by default. You can install a service with the included script:
+
+```sh
+cd HomeAssistant-Vehicle-Battery-Monitor
+chmod +x scripts/install-systemd.sh
+./scripts/install-systemd.sh
+```
+
+Logs: `sudo journalctl -u vehicle-battery-monitor -f`
 
 ## Notes
 
