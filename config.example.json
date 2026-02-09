@@ -1,0 +1,14 @@
+{
+  "mqtt": {
+    "url": "mqtt://homeassistant.local:1883",
+    "username": "",
+    "password": "",
+    "discoveryPrefix": "homeassistant",
+    "clientId": "bm6bm7-bridge"
+  },
+  "scanMs": 7000,
+  "connectScanMs": 20000,
+  "readTimeoutMs": 20000,
+  "pollIntervalSec": 86400,
+  "failureBackoffSec": 300
+}

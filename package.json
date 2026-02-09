@@ -1,0 +1,20 @@
+{
+  "name": "bm6bm7-mqtt-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "BM6/BM7 Bluetooth battery monitor bridge for Home Assistant via MQTT discovery.",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "scan": "node src/index.js --scan",
+    "lint": "node -c src/index.js && node -c src/bm6bm7_ble.js && node -c src/mqtt_ha_discovery.js"
+  },
+  "dependencies": {
+    "mqtt": "^5.10.0",
+    "node-ble": "^1.13.0"
+  },
+  "optionalDependencies": {
+    "@abandonware/noble": "^1.9.2-15"
+  }
+}
+
