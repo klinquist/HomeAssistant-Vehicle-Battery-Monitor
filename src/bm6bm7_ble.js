@@ -160,14 +160,6 @@ async function findDevicesByAddressBluez(adapter, addresses, scanMs) {
     targets.map(async (address) => {
       try {
         const device = await adapter.waitDevice(address, scanMs, 1000);
-        try {
-          const rssi = await device.getRSSI();
-          if (!Number.isFinite(rssi)) {
-            return null;
-          }
-        } catch {
-          return null;
-        }
         return { address, device };
       } catch {
         return null;
