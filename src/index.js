@@ -316,6 +316,10 @@ async function main() {
     if (!eligibleAddresses.length) return;
 
     const found = await withBleLock(() => ble.findDevicesByAddress(eligibleAddresses, config.connectScanMs));
+    if (found.size !== eligibleAddresses.length) {
+      const missing = eligibleAddresses.filter((address) => !found.get(address));
+      logInfo("Devices missing after connect scan.", { missing, found: found.size, expected: eligibleAddresses.length });
+    }
     let okCount = 0;
     let failCount = 0;
     for (const address of eligibleAddresses) {
@@ -336,6 +340,7 @@ async function main() {
       const handle = found.get(address);
       if (!handle) {
         await setAvailability(address, false);
+        logError(`Read failed (${address}).`, "Device not found in connect scan.");
         failCount += 1;
         continue;
       }
