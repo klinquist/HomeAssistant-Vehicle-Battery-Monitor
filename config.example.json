@@ -8,7 +8,7 @@
     "clientId": "bm6bm7-bridge"
   },
   "scanMs": 7000,
-  "connectScanMs": 20000,
+  "connectScanMs": 30000,
   "readTimeoutMs": 20000,
   "pollIntervalSec": 86400,
   "failureBackoffSec": 300

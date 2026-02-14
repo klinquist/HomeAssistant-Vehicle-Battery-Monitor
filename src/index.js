@@ -136,9 +136,9 @@ function loadConfig(args) {
       bridgeIdAuto,
     },
     scanMs: Number.isFinite(cfg.scanMs) ? cfg.scanMs : 7000,
-    connectScanMs: Number.isFinite(cfg.connectScanMs) ? cfg.connectScanMs : 20000,
+    connectScanMs: Number.isFinite(cfg.connectScanMs) ? cfg.connectScanMs : 30000,
     readTimeoutMs: Number.isFinite(cfg.readTimeoutMs) ? cfg.readTimeoutMs : 20000,
-    pollIntervalSec: Number.isFinite(cfg.pollIntervalSec) ? cfg.pollIntervalSec : 300,
+    pollIntervalSec: Number.isFinite(cfg.pollIntervalSec) ? cfg.pollIntervalSec : 86400,
     failureBackoffSec: Number.isFinite(cfg.failureBackoffSec) ? cfg.failureBackoffSec : 300,
   };
 }
