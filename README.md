@@ -1,8 +1,13 @@
 # Vehicle Battery Monitor → Home Assistant (MQTT bridge)
 
-Supports the **Ancel** BM6 or BM7 (BM300 Pro) Bluetooth battery monitors, commonly found on Amazon or AliExpress for roughly $20–40 each.
+Supports the **Ancel** BM6 or BM7 (BM300 Pro) Bluetooth battery monitors, commonly found on Amazon or AliExpress for $20–40 each.
 
 This runs on a *separate* computer (near the BLE devices), and is intended to run well on a Raspberry Pi. It scans for BM6/BM7 (BM300 Pro) monitors, reads voltage / battery % / temperature, and publishes them to Home Assistant via **MQTT Discovery**.
+
+## Requirements
+
+- Node.js 18+
+- Bluetooth (BlueZ on Linux)
 
 ## Home Assistant setup
 
@@ -57,6 +62,8 @@ cd HomeAssistant-Vehicle-Battery-Monitor
 chmod +x scripts/install-systemd.sh
 sudo ./scripts/install-systemd.sh
 ```
+
+The install script checks for Node.js 18+ (warns if older), validates that `config.json` exists and includes all keys from `config.example.json`, and runs `npm install` if `node_modules` is missing.
 
 Logs: `sudo journalctl -u vehicle-battery-monitor -f`
 
