@@ -25,7 +25,8 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 - `mqtt.url`: MQTT broker URL (usually your Home Assistant host).
 - `mqtt.username` / `mqtt.password`: MQTT credentials if required.
 - `mqtt.discoveryPrefix`: Home Assistant MQTT discovery prefix (default `homeassistant`).
-- `mqtt.clientId`: MQTT client ID for this bridge.
+- `mqtt.bridgeId`: Optional bridge ID to namespace bridge/registry topics and the bridge entities in Home Assistant. Set to `"auto"` to derive the last 4 hex chars of the Bluetooth MAC (Linux/BlueZ).
+- `mqtt.clientId`: MQTT client ID for this bridge. If empty or set to `bm6bm7-bridge`, it will be auto-suffixed when `bridgeId` is set.
 - `scanMs`: BLE scan duration in ms when you press “Scan BM6/BM7”.
 - `connectScanMs`: How long to scan for known devices before polling.
 - `readTimeoutMs`: Timeout waiting for a device to respond.
@@ -62,6 +63,13 @@ Logs: `sudo journalctl -u vehicle-battery-monitor -f`
 ## Notes
 
 - Home Assistant cannot “prompt to name” devices when using pure MQTT discovery. The bridge publishes a default name (e.g. `BM6 aa:bb:cc:dd:ee:ff`). You can rename the device/entities in Home Assistant UI.
-- Devices are stored via retained MQTT messages under `bm6bm7/registry/#` (no device list in `config.json`).
+- Devices are stored via retained MQTT messages under `bm6bm7/registry/#` (or `bm6bm7/<bridgeId>/registry/#` if you set `mqtt.bridgeId`).
 - If a device isn’t currently in range (e.g. vehicle is away), the bridge skips reads and marks it `offline` via availability.
 - Linux is the primary target (BlueZ via `node-ble`). macOS can work via the optional `@abandonware/noble` path.
+
+## Multiple bridges
+
+- Set a unique `mqtt.bridgeId` per host (or `"auto"`).
+- If `mqtt.clientId` is empty or set to `bm6bm7-bridge`, it defaults to `bm6bm7-bridge-<bridgeId>`.
+- Enabling `bridgeId` creates a new Bridge device (buttons/status) in Home Assistant; remove the old one if you want.
+- To clean up old retained topics, clear `bm6bm7/bridge/#` and `bm6bm7/registry/#` on the broker.

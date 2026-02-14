@@ -4,9 +4,9 @@ const { macToId } = require("./mqtt_ha_discovery");
 
 const REGISTRY_PREFIX = "bm6bm7/registry";
 
-function registryTopicForAddress(address) {
+function registryTopicForAddress(address, prefix = REGISTRY_PREFIX) {
   const id = macToId(address);
-  return `${REGISTRY_PREFIX}/${id}`;
+  return `${prefix}/${id}`;
 }
 
 function parseRegistryPayload(payload) {
@@ -60,4 +60,3 @@ module.exports = {
   buildRegistryPayload,
   mergeEntry,
 };
-

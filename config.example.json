@@ -4,6 +4,7 @@
     "username": "",
     "password": "",
     "discoveryPrefix": "homeassistant",
+    "bridgeId": "",
     "clientId": "bm6bm7-bridge"
   },
   "scanMs": 7000,

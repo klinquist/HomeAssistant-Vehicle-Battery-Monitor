@@ -8,7 +8,7 @@ const mqtt = require("mqtt");
 const { buildAllSensorConfigs, macToId } = require("./mqtt_ha_discovery");
 const { createBleClient, inferModelFromAdvertisedName, normalizeAddress } = require("./bm6bm7_ble");
 const { buildBridgeDiscovery } = require("./mqtt_ha_bridge_entities");
-const { REGISTRY_PREFIX, registryTopicForAddress, parseRegistryPayload, buildRegistryPayload, mergeEntry } = require("./registry");
+const { registryTopicForAddress, parseRegistryPayload, buildRegistryPayload, mergeEntry } = require("./registry");
 
 process.on("unhandledRejection", (reason) => {
   // eslint-disable-next-line no-console
@@ -35,6 +35,60 @@ function formatErr(err) {
   }
 }
 
+function normalizeBridgeId(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+}
+
+function readBluetoothMacFromSysfs() {
+  const root = "/sys/class/bluetooth";
+  try {
+    const entries = fs.readdirSync(root);
+    for (const entry of entries) {
+      if (!/^hci\d+$/.test(entry)) continue;
+      const addrPath = path.join(root, entry, "address");
+      if (!fs.existsSync(addrPath)) continue;
+      const raw = fs.readFileSync(addrPath, "utf8").trim();
+      if (raw) return raw;
+    }
+  } catch {
+    // ignore
+  }
+  return "";
+}
+
+function macSuffix(mac, length) {
+  const hex = String(mac || "").toLowerCase().replace(/[^0-9a-f]+/g, "");
+  if (hex.length < length) return "";
+  return hex.slice(-length);
+}
+
+function resolveBridgeId(raw) {
+  const trimmed = String(raw || "").trim();
+  if (!trimmed) return "";
+  const token = trimmed.toLowerCase();
+  if (token === "auto" || token === "btmac4" || token === "mac4") {
+    const mac = readBluetoothMacFromSysfs();
+    return normalizeBridgeId(macSuffix(mac, 4));
+  }
+  return normalizeBridgeId(trimmed);
+}
+
+function buildBridgeTopics(bridgeId) {
+  const base = bridgeId ? `bm6bm7/${bridgeId}` : "bm6bm7";
+  return {
+    bridgeId,
+    base,
+    registryPrefix: `${base}/registry`,
+    bridgeAvailabilityTopic: `${base}/bridge/availability`,
+    bridgeStateTopic: `${base}/bridge/state`,
+    bridgeCmdPrefix: `${base}/bridge/cmd`,
+  };
+}
+
 function parseArgs(argv) {
   const args = { scan: false, configPath: "" };
   for (let i = 0; i < argv.length; i += 1) {
@@ -59,13 +113,27 @@ function loadConfig(args) {
   const cfg = readJson(configPath);
 
   const mqttCfg = cfg.mqtt || {};
+  const bridgeIdRaw = typeof mqttCfg.bridgeId === "string" ? mqttCfg.bridgeId : "";
+  const bridgeIdHint = String(bridgeIdRaw || "").trim().toLowerCase();
+  const bridgeIdAuto = bridgeIdHint === "auto" || bridgeIdHint === "btmac4" || bridgeIdHint === "mac4";
+  const bridgeId = resolveBridgeId(bridgeIdRaw);
+  const clientIdRaw = typeof mqttCfg.clientId === "string" ? mqttCfg.clientId.trim() : "";
+  const defaultClientId = "bm6bm7-bridge";
+  const clientId =
+    clientIdRaw && (!bridgeId || clientIdRaw !== defaultClientId)
+      ? clientIdRaw
+      : bridgeId
+        ? `${defaultClientId}-${bridgeId}`
+        : defaultClientId;
   return {
     mqtt: {
       url: mqttCfg.url || "mqtt://localhost:1883",
       username: mqttCfg.username || "",
       password: mqttCfg.password || "",
       discoveryPrefix: mqttCfg.discoveryPrefix || "homeassistant",
-      clientId: mqttCfg.clientId || "bm6bm7-bridge",
+      clientId,
+      bridgeId,
+      bridgeIdAuto,
     },
     scanMs: Number.isFinite(cfg.scanMs) ? cfg.scanMs : 7000,
     connectScanMs: Number.isFinite(cfg.connectScanMs) ? cfg.connectScanMs : 20000,
@@ -75,13 +143,13 @@ function loadConfig(args) {
   };
 }
 
-function connectMqtt(mqttCfg) {
+function connectMqtt(mqttCfg, bridgeTopics) {
   const client = mqtt.connect(mqttCfg.url, {
     clientId: mqttCfg.clientId,
     username: mqttCfg.username || undefined,
     password: mqttCfg.password || undefined,
     will: {
-      topic: `bm6bm7/bridge/availability`,
+      topic: bridgeTopics.bridgeAvailabilityTopic,
       payload: "offline",
       retain: true,
       qos: 0,
@@ -109,8 +177,14 @@ async function publishDiscoveryForDevice(client, mqttCfg, device, expireAfterSec
   }
 }
 
-async function publishBridgeDiscovery(client, mqttCfg) {
-  const messages = buildBridgeDiscovery(mqttCfg.discoveryPrefix);
+async function publishBridgeDiscovery(client, mqttCfg, bridgeTopics) {
+  const messages = buildBridgeDiscovery({
+    discoveryPrefix: mqttCfg.discoveryPrefix,
+    bridgeId: bridgeTopics.bridgeId,
+    availabilityTopic: bridgeTopics.bridgeAvailabilityTopic,
+    stateTopic: bridgeTopics.bridgeStateTopic,
+    commandPrefix: bridgeTopics.bridgeCmdPrefix,
+  });
   for (const message of messages) {
     await mqttPublish(client, message.configTopic, JSON.stringify(message.payload), { retain: true });
   }
@@ -129,13 +203,18 @@ async function publishState(client, address, reading) {
   await mqttPublish(client, `bm6bm7/${id}/state/temperature`, String(reading.temperature), { retain });
 }
 
-async function publishBridgeState(client, state) {
-  await mqttPublish(client, "bm6bm7/bridge/state", JSON.stringify(state), { retain: true });
+async function publishBridgeState(client, state, bridgeTopics) {
+  await mqttPublish(client, bridgeTopics.bridgeStateTopic, JSON.stringify(state), { retain: true });
 }
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const config = loadConfig(args);
+  const bridgeTopics = buildBridgeTopics(config.mqtt.bridgeId);
+  if (config.mqtt.bridgeIdAuto && !config.mqtt.bridgeId) {
+    // eslint-disable-next-line no-console
+    console.error("Bridge ID auto mode enabled but Bluetooth MAC was not found; using default topics.");
+  }
   const known = new Map(); // address -> {address, name, model, createdAt, updatedAt}
   const discoveredModels = new Map(); // address -> model (bm6/bm7)
   const discoverySignature = new Map(); // address -> signature
@@ -167,7 +246,7 @@ async function main() {
     Object.assign(bridgeState, patch);
     bridgeState.updated_at = nowIso();
     try {
-      await publishBridgeState(mqttClient, bridgeState);
+      await publishBridgeState(mqttClient, bridgeState, bridgeTopics);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("Bridge state publish failed:", err && err.message ? err.message : err);
@@ -191,13 +270,13 @@ async function main() {
     logInfo("Next poll scheduled.", { at: nextPollAt, reason: reason || "" });
   }
 
-  const mqttClient = connectMqtt(config.mqtt);
+  const mqttClient = connectMqtt(config.mqtt, bridgeTopics);
   mqttClient.on("connect", async () => {
     try {
-      await mqttPublish(mqttClient, `bm6bm7/bridge/availability`, "online", { retain: true });
-      await publishBridgeDiscovery(mqttClient, config.mqtt);
-      mqttClient.subscribe(`${REGISTRY_PREFIX}/#`);
-      mqttClient.subscribe("bm6bm7/bridge/cmd/#");
+      await mqttPublish(mqttClient, bridgeTopics.bridgeAvailabilityTopic, "online", { retain: true });
+      await publishBridgeDiscovery(mqttClient, config.mqtt, bridgeTopics);
+      mqttClient.subscribe(`${bridgeTopics.registryPrefix}/#`);
+      mqttClient.subscribe(`${bridgeTopics.bridgeCmdPrefix}/#`);
       await setBridgeState({ status: "idle", last_error: "" });
       logInfo("MQTT connected; bridge ready.", {
         connectScanMs: config.connectScanMs,
@@ -254,7 +333,7 @@ async function main() {
   async function upsertRegistry(device) {
     const entry = mergeEntry(known.get(device.address), device);
     known.set(device.address, entry);
-    const topic = registryTopicForAddress(entry.address);
+    const topic = registryTopicForAddress(entry.address, bridgeTopics.registryPrefix);
     await mqttPublish(mqttClient, topic, buildRegistryPayload(entry), { retain: true });
     discoverySignature.delete(entry.address);
     await ensureDiscoveryPublished(entry.address);
@@ -432,7 +511,7 @@ async function main() {
   mqttClient.on("message", async (topic, payloadBuf) => {
     const payload = payloadBuf ? payloadBuf.toString("utf8") : "";
 
-    if (topic.startsWith(`${REGISTRY_PREFIX}/`)) {
+    if (topic.startsWith(`${bridgeTopics.registryPrefix}/`)) {
       const entry = parseRegistryPayload(payload);
       if (!entry) return;
       known.set(entry.address, entry);
@@ -447,7 +526,7 @@ async function main() {
       return;
     }
 
-    if (topic === "bm6bm7/bridge/cmd/scan") {
+    if (topic === `${bridgeTopics.bridgeCmdPrefix}/scan`) {
       if (payload && payload !== "PRESS") return;
       if (scanRunning) {
         logInfo("Scan requested but already running; ignoring.");
@@ -480,7 +559,7 @@ async function main() {
       return;
     }
 
-    if (topic === "bm6bm7/bridge/cmd/poll") {
+    if (topic === `${bridgeTopics.bridgeCmdPrefix}/poll`) {
       if (payload && payload !== "PRESS") return;
       logInfo("Poll command received.");
       try {
@@ -515,7 +594,7 @@ async function main() {
     stopping = true;
     cancelPoll();
     try {
-      await mqttPublish(mqttClient, `bm6bm7/bridge/availability`, "offline", { retain: true });
+      await mqttPublish(mqttClient, bridgeTopics.bridgeAvailabilityTopic, "offline", { retain: true });
     } catch {
       // ignore
     }

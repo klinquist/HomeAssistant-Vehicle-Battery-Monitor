@@ -1,15 +1,22 @@
 "use strict";
 
-function buildBridgeDevicePayload() {
+function bridgeUniqueId(bridgeId, suffix) {
+  const base = bridgeId ? `bm6bm7_bridge_${bridgeId}` : "bm6bm7_bridge";
+  return `${base}_${suffix}`;
+}
+
+function buildBridgeDevicePayload(bridgeId) {
+  const id = bridgeId ? `bm6bm7_bridge_${bridgeId}` : "bm6bm7_bridge";
+  const name = bridgeId ? `BM6/BM7 Bridge ${bridgeId}` : "BM6/BM7 Bridge";
   return {
-    identifiers: ["bm6bm7_bridge"],
-    name: "BM6/BM7 Bridge",
+    identifiers: [id],
+    name,
     manufacturer: "bluetooth-battery-monitor",
     model: "MQTT bridge",
   };
 }
 
-function buttonConfig({ discoveryPrefix, uniqueId, name, commandTopic }) {
+function buttonConfig({ discoveryPrefix, uniqueId, name, commandTopic, availabilityTopic, bridgeId }) {
   return {
     configTopic: `${discoveryPrefix}/button/${uniqueId}/config`,
     payload: {
@@ -17,15 +24,15 @@ function buttonConfig({ discoveryPrefix, uniqueId, name, commandTopic }) {
       unique_id: uniqueId,
       command_topic: commandTopic,
       payload_press: "PRESS",
-      availability_topic: "bm6bm7/bridge/availability",
+      availability_topic: availabilityTopic,
       payload_available: "online",
       payload_not_available: "offline",
-      device: buildBridgeDevicePayload(),
+      device: buildBridgeDevicePayload(bridgeId),
     },
   };
 }
 
-function sensorConfig({ discoveryPrefix, uniqueId, name, stateTopic, valueTemplate }) {
+function sensorConfig({ discoveryPrefix, uniqueId, name, stateTopic, valueTemplate, availabilityTopic, bridgeId }) {
   return {
     configTopic: `${discoveryPrefix}/sensor/${uniqueId}/config`,
     payload: {
@@ -34,47 +41,56 @@ function sensorConfig({ discoveryPrefix, uniqueId, name, stateTopic, valueTempla
       state_topic: stateTopic,
       value_template: valueTemplate,
       json_attributes_topic: stateTopic,
-      availability_topic: "bm6bm7/bridge/availability",
+      availability_topic: availabilityTopic,
       payload_available: "online",
       payload_not_available: "offline",
       entity_category: "diagnostic",
       icon: "mdi:bluetooth",
-      device: buildBridgeDevicePayload(),
+      device: buildBridgeDevicePayload(bridgeId),
     },
   };
 }
 
-function buildBridgeButtons(discoveryPrefix) {
+function buildBridgeButtons({ discoveryPrefix, bridgeId, availabilityTopic, commandPrefix }) {
   return [
     buttonConfig({
       discoveryPrefix,
-      uniqueId: "bm6bm7_bridge_scan",
+      uniqueId: bridgeUniqueId(bridgeId, "scan"),
       name: "Scan BM6/BM7",
-      commandTopic: "bm6bm7/bridge/cmd/scan",
+      commandTopic: `${commandPrefix}/scan`,
+      availabilityTopic,
+      bridgeId,
     }),
     buttonConfig({
       discoveryPrefix,
-      uniqueId: "bm6bm7_bridge_update",
+      uniqueId: bridgeUniqueId(bridgeId, "update"),
       name: "Update BM6/BM7 Now",
-      commandTopic: "bm6bm7/bridge/cmd/poll",
+      commandTopic: `${commandPrefix}/poll`,
+      availabilityTopic,
+      bridgeId,
     }),
   ];
 }
 
-function buildBridgeSensors(discoveryPrefix) {
+function buildBridgeSensors({ discoveryPrefix, bridgeId, availabilityTopic, stateTopic }) {
   return [
     sensorConfig({
       discoveryPrefix,
-      uniqueId: "bm6bm7_bridge_status",
+      uniqueId: bridgeUniqueId(bridgeId, "status"),
       name: "BM6/BM7 Bridge Status",
-      stateTopic: "bm6bm7/bridge/state",
+      stateTopic,
       valueTemplate: "{{ value_json.status }}",
+      availabilityTopic,
+      bridgeId,
     }),
   ];
 }
 
-function buildBridgeDiscovery(discoveryPrefix) {
-  return [...buildBridgeButtons(discoveryPrefix), ...buildBridgeSensors(discoveryPrefix)];
+function buildBridgeDiscovery({ discoveryPrefix, bridgeId, availabilityTopic, stateTopic, commandPrefix }) {
+  return [
+    ...buildBridgeButtons({ discoveryPrefix, bridgeId, availabilityTopic, commandPrefix }),
+    ...buildBridgeSensors({ discoveryPrefix, bridgeId, availabilityTopic, stateTopic }),
+  ];
 }
 
 module.exports = {
