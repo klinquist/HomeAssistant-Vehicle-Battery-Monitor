@@ -8,6 +8,8 @@ const COMMAND_HEX = "d1550700000000000000000000000000";
 const NOTIFY_UUID = "fff4";
 const WRITE_UUID = "fff3";
 const BASE_UUID_SUFFIX = "00001000800000805f9b34fb";
+const BLUEZ_DISCOVERY_SETTLE_MS = 350;
+const BLUEZ_RETRY_DELAY_MS = 600;
 
 function normalizeAddress(address) {
   if (!address) return "";
@@ -26,6 +28,19 @@ function inferModelFromAdvertisedName(name) {
 
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientBluezError(err) {
+  const text = String((err && err.message) || err || "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("software caused connection abort") ||
+    text.includes("connection abort") ||
+    text.includes("not connected") ||
+    text.includes("failed to connect") ||
+    text.includes("connection attempt failed") ||
+    text.includes("operation already in progress")
+  );
 }
 
 function encryptCommand(key) {
@@ -142,7 +157,10 @@ async function scanDevicesBluez(adapter, scanMs) {
     results.push({ address: normalizeAddress(address || id), rssi, name });
   }
 
-  if (!wasDiscovering) await adapter.stopDiscovery();
+  if (!wasDiscovering) {
+    await adapter.stopDiscovery();
+    await wait(BLUEZ_DISCOVERY_SETTLE_MS);
+  }
   return results;
 }
 
@@ -171,7 +189,10 @@ async function findDevicesByAddressBluez(adapter, addresses, scanMs) {
     if (result) found.set(result.address, result.device);
   }
 
-  if (!wasDiscovering) await adapter.stopDiscovery();
+  if (!wasDiscovering) {
+    await adapter.stopDiscovery();
+    await wait(BLUEZ_DISCOVERY_SETTLE_MS);
+  }
   return found;
 }
 
@@ -190,73 +211,83 @@ async function readBatteryDataBluez(device, model, readTimeoutMs) {
   const key = model === "bm6" ? BM6_KEY : BM7_KEY;
   const command = encryptCommand(key);
 
-  let notifyChar = null;
-  try {
-    await withTimeout(device.connect(), readTimeoutMs, `Timed out connecting to ${model.toUpperCase()}.`);
-    const gattServer = await device.gatt();
-    const writeChar = await findCharacteristicByUuid(gattServer, WRITE_UUID);
-    notifyChar = await findCharacteristicByUuid(gattServer, NOTIFY_UUID);
-    if (!writeChar || !notifyChar) throw new Error(`Missing required characteristics on ${model.toUpperCase()}.`);
+  async function runReadAttempt() {
+    let notifyChar = null;
+    try {
+      await withTimeout(device.connect(), readTimeoutMs, `Timed out connecting to ${model.toUpperCase()}.`);
+      const gattServer = await device.gatt();
+      const writeChar = await findCharacteristicByUuid(gattServer, WRITE_UUID);
+      notifyChar = await findCharacteristicByUuid(gattServer, NOTIFY_UUID);
+      if (!writeChar || !notifyChar) throw new Error(`Missing required characteristics on ${model.toUpperCase()}.`);
 
-    let cleanup = () => {};
-    const dataPromise = new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
-        cleanup();
-        reject(new Error(`Timed out waiting for ${model.toUpperCase()} data.`));
-      }, readTimeoutMs);
-
-      function onValueChanged(buffer) {
-        const messageHex = decryptPayload(buffer, key);
-        const parsed = parseBatteryMessage(messageHex, model);
-        if (parsed) {
+      let cleanup = () => {};
+      const dataPromise = new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
           cleanup();
-          resolve(parsed);
+          reject(new Error(`Timed out waiting for ${model.toUpperCase()} data.`));
+        }, readTimeoutMs);
+
+        function onValueChanged(buffer) {
+          const messageHex = decryptPayload(buffer, key);
+          const parsed = parseBatteryMessage(messageHex, model);
+          if (parsed) {
+            cleanup();
+            resolve(parsed);
+          }
+        }
+
+        cleanup = () => {
+          clearTimeout(timeout);
+          try {
+            notifyChar.removeListener("valuechanged", onValueChanged);
+          } catch {
+            // ignore
+          }
+        };
+
+        notifyChar.on("valuechanged", onValueChanged);
+      });
+
+      try {
+        if (typeof notifyChar.stopNotifications === "function") {
+          try {
+            await notifyChar.stopNotifications();
+          } catch {
+            // ignore
+          }
+        }
+        await notifyChar.startNotifications();
+        await writeChar.writeValueWithResponse(command);
+        return await dataPromise;
+      } catch (err) {
+        cleanup();
+        dataPromise.catch(() => {});
+        throw err;
+      } finally {
+        cleanup();
+        if (typeof notifyChar.stopNotifications === "function") {
+          try {
+            await notifyChar.stopNotifications();
+          } catch {
+            // ignore
+          }
         }
       }
-
-      cleanup = () => {
-        clearTimeout(timeout);
-        try {
-          notifyChar.removeListener("valuechanged", onValueChanged);
-        } catch {
-          // ignore
-        }
-      };
-
-      notifyChar.on("valuechanged", onValueChanged);
-    });
-
-    try {
-      if (typeof notifyChar.stopNotifications === "function") {
-        try {
-          await notifyChar.stopNotifications();
-        } catch {
-          // ignore
-        }
-      }
-      await notifyChar.startNotifications();
-      await writeChar.writeValueWithResponse(command);
-      return await dataPromise;
-    } catch (err) {
-      cleanup();
-      dataPromise.catch(() => {});
-      throw err;
     } finally {
-      cleanup();
-      if (typeof notifyChar.stopNotifications === "function") {
-        try {
-          await notifyChar.stopNotifications();
-        } catch {
-          // ignore
-        }
+      try {
+        await device.disconnect();
+      } catch {
+        // ignore
       }
     }
-  } finally {
-    try {
-      await device.disconnect();
-    } catch {
-      // ignore
-    }
+  }
+
+  try {
+    return await runReadAttempt();
+  } catch (err) {
+    if (!isTransientBluezError(err)) throw err;
+    await wait(BLUEZ_RETRY_DELAY_MS);
+    return runReadAttempt();
   }
 }
 

@@ -35,6 +35,19 @@ function formatErr(err) {
   }
 }
 
+function isTransientReadConnectionError(errOrMessage) {
+  const text = String(errOrMessage || "").toLowerCase();
+  if (!text) return false;
+  return (
+    text.includes("software caused connection abort") ||
+    text.includes("connection abort") ||
+    text.includes("not connected") ||
+    text.includes("failed to connect") ||
+    text.includes("connection attempt failed") ||
+    text.includes("operation already in progress")
+  );
+}
+
 function normalizeBridgeId(value) {
   return String(value || "")
     .trim()
@@ -384,7 +397,7 @@ async function main() {
 
     if (scanRunning) {
       logInfo("Pre-scan skipped because a scan is already running.");
-    } else {
+    } else if (!known.size) {
       try {
         logInfo("Pre-scan started.");
         const preScanResults = await withBleSession((ble) => scanOnce(ble));
@@ -392,6 +405,8 @@ async function main() {
       } catch (err) {
         logError("Pre-scan failed.", err && err.message ? err.message : err);
       }
+    } else {
+      logInfo("Pre-scan skipped because registry already has devices.", { devices: known.size });
     }
 
     const addresses = Array.from(known.keys());
@@ -431,7 +446,7 @@ async function main() {
           continue;
         }
 
-        const handle = found.get(address);
+        let handle = found.get(address);
         if (!handle) {
           await setAvailability(address, false);
           logError(`Read failed (${address}).`, "Device not found in connect scan.");
@@ -462,6 +477,16 @@ async function main() {
               discoveredModels.set(address, fallback);
               await upsertRegistry(device);
             } else {
+              if (isTransientReadConnectionError(message)) {
+                try {
+                  logInfo("Refreshing device handle after connection error.", { address });
+                  const refound = await ble.findDevicesByAddress([address], Math.min(config.connectScanMs, 12000));
+                  const refreshedHandle = refound.get(address);
+                  if (refreshedHandle) handle = refreshedHandle;
+                } catch {
+                  // ignore and fall through to retry with current handle
+                }
+              }
               // Retry once with same model after short delay
               await new Promise((r) => setTimeout(r, 1500));
               reading = await attemptRead(2, model);
