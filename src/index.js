@@ -294,7 +294,6 @@ async function main() {
     console.error("MQTT error:", err);
   });
 
-  const ble = await createBleClient();
   let stopping = false;
   let bleLock = Promise.resolve();
 
@@ -305,8 +304,23 @@ async function main() {
     return next;
   }
 
-  async function scanOnce() {
-    const results = await withBleLock(() => ble.scanDevices(config.scanMs));
+  async function withBleSession(task) {
+    return withBleLock(async () => {
+      const ble = await createBleClient();
+      try {
+        return await task(ble);
+      } finally {
+        try {
+          await ble.destroy();
+        } catch {
+          // ignore
+        }
+      }
+    });
+  }
+
+  async function scanOnce(ble) {
+    const results = await ble.scanDevices(config.scanMs);
     const now = Date.now();
     for (const item of results) {
       const address = normalizeAddress(item.address);
@@ -373,7 +387,7 @@ async function main() {
     } else {
       try {
         logInfo("Pre-scan started.");
-        const preScanResults = await scanOnce();
+        const preScanResults = await withBleSession((ble) => scanOnce(ble));
         logInfo("Pre-scan finished.", { found: preScanResults.length });
       } catch (err) {
         logError("Pre-scan failed.", err && err.message ? err.message : err);
@@ -394,94 +408,97 @@ async function main() {
 
     if (!eligibleAddresses.length) return;
 
-    const found = await withBleLock(() => ble.findDevicesByAddress(eligibleAddresses, config.connectScanMs));
-    if (found.size !== eligibleAddresses.length) {
-      const missing = eligibleAddresses.filter((address) => !found.get(address));
-      logInfo("Devices missing after connect scan.", { missing, found: found.size, expected: eligibleAddresses.length });
-    }
-    let okCount = 0;
-    let failCount = 0;
-    for (const address of eligibleAddresses) {
-      const device = known.get(address);
-      if (!device) continue;
-
-      const model = device.model || discoveredModels.get(address) || "";
-      if (model !== "bm6" && model !== "bm7") {
-        if (!modelWarningOnce.has(address)) {
-          modelWarningOnce.add(address);
-          // eslint-disable-next-line no-console
-          console.error(`Skipping ${address}: unknown model. Press Scan or publish registry with model bm6/bm7.`);
-        }
-        await setAvailability(address, false);
-        continue;
+    const pollCounts = await withBleSession(async (ble) => {
+      const found = await ble.findDevicesByAddress(eligibleAddresses, config.connectScanMs);
+      if (found.size !== eligibleAddresses.length) {
+        const missing = eligibleAddresses.filter((address) => !found.get(address));
+        logInfo("Devices missing after connect scan.", { missing, found: found.size, expected: eligibleAddresses.length });
       }
+      let okCount = 0;
+      let failCount = 0;
+      for (const address of eligibleAddresses) {
+        const device = known.get(address);
+        if (!device) continue;
 
-      const handle = found.get(address);
-      if (!handle) {
-        await setAvailability(address, false);
-        logError(`Read failed (${address}).`, "Device not found in connect scan.");
-        failCount += 1;
-        continue;
-      }
-
-      const label = device.name ? `${device.name} (${address})` : address;
-
-      const attemptRead = async (attempt, attemptModel) => {
-        logInfo("Read attempt.", { address, model: attemptModel, attempt });
-        return withBleLock(() => ble.readBatteryData(handle, attemptModel, config.readTimeoutMs));
-      };
-
-      try {
-        let reading;
-        try {
-          reading = await attemptRead(1, model);
-        } catch (err) {
-          const message = String(err && err.message ? err.message : err);
-          logError(`Read attempt 1 failed for ${label}.`, message);
-
-          if (message.toLowerCase().includes("timed out waiting")) {
-            const fallback = model === "bm6" ? "bm7" : "bm6";
-            logInfo("Retrying with model fallback.", { address, from: model, to: fallback });
-            reading = await attemptRead(2, fallback);
-            device.model = fallback;
-            discoveredModels.set(address, fallback);
-            await upsertRegistry(device);
-          } else {
-            // Retry once with same model after short delay
-            await new Promise((r) => setTimeout(r, 1500));
-            reading = await attemptRead(2, model);
+        const model = device.model || discoveredModels.get(address) || "";
+        if (model !== "bm6" && model !== "bm7") {
+          if (!modelWarningOnce.has(address)) {
+            modelWarningOnce.add(address);
+            // eslint-disable-next-line no-console
+            console.error(`Skipping ${address}: unknown model. Press Scan or publish registry with model bm6/bm7.`);
           }
+          await setAvailability(address, false);
+          continue;
         }
 
-        await publishState(mqttClient, address, reading);
-        await setAvailability(address, true);
-        lastSeenMsByAddress.set(address, Date.now());
-        backoffUntilMsByAddress.delete(address);
-        logInfo("Reading ok.", {
-          address,
-          name: device.name || "",
-          model: device.model || model,
-          voltage: reading.voltage,
-          soc: reading.soc,
-          temperature: reading.temperature,
-        });
-        okCount += 1;
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.error(`Read failed (${address}):`, err && err.message ? err.message : err);
-        await setAvailability(address, false);
-        backoffUntilMsByAddress.set(address, Date.now() + Math.max(1, config.failureBackoffSec) * 1000);
-        failCount += 1;
+        const handle = found.get(address);
+        if (!handle) {
+          await setAvailability(address, false);
+          logError(`Read failed (${address}).`, "Device not found in connect scan.");
+          failCount += 1;
+          continue;
+        }
+
+        const label = device.name ? `${device.name} (${address})` : address;
+
+        const attemptRead = async (attempt, attemptModel) => {
+          logInfo("Read attempt.", { address, model: attemptModel, attempt });
+          return ble.readBatteryData(handle, attemptModel, config.readTimeoutMs);
+        };
+
+        try {
+          let reading;
+          try {
+            reading = await attemptRead(1, model);
+          } catch (err) {
+            const message = String(err && err.message ? err.message : err);
+            logError(`Read attempt 1 failed for ${label}.`, message);
+
+            if (message.toLowerCase().includes("timed out waiting")) {
+              const fallback = model === "bm6" ? "bm7" : "bm6";
+              logInfo("Retrying with model fallback.", { address, from: model, to: fallback });
+              reading = await attemptRead(2, fallback);
+              device.model = fallback;
+              discoveredModels.set(address, fallback);
+              await upsertRegistry(device);
+            } else {
+              // Retry once with same model after short delay
+              await new Promise((r) => setTimeout(r, 1500));
+              reading = await attemptRead(2, model);
+            }
+          }
+
+          await publishState(mqttClient, address, reading);
+          await setAvailability(address, true);
+          lastSeenMsByAddress.set(address, Date.now());
+          backoffUntilMsByAddress.delete(address);
+          logInfo("Reading ok.", {
+            address,
+            name: device.name || "",
+            model: device.model || model,
+            voltage: reading.voltage,
+            soc: reading.soc,
+            temperature: reading.temperature,
+          });
+          okCount += 1;
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(`Read failed (${address}):`, err && err.message ? err.message : err);
+          await setAvailability(address, false);
+          backoffUntilMsByAddress.set(address, Date.now() + Math.max(1, config.failureBackoffSec) * 1000);
+          failCount += 1;
+        }
       }
-    }
+      return { okCount, failCount };
+    });
 
     await setBridgeState({
       status: "idle",
       last_poll_finished: nowIso(),
-      last_poll_ok: okCount,
-      last_poll_fail: failCount,
+      last_poll_ok: pollCounts.okCount,
+      last_poll_fail: pollCounts.failCount,
     });
-    logInfo("Poll finished.", { ok: okCount, fail: failCount });
+    logInfo("Poll finished.", { ok: pollCounts.okCount, fail: pollCounts.failCount });
   }
 
   function schedulePollLoop() {
@@ -537,7 +554,7 @@ async function main() {
       logInfo("Scan command received.");
       try {
         await setBridgeState({ status: "scanning", last_scan_started: nowIso(), last_scan_found: 0, last_error: "" });
-        const results = await scanOnce();
+        const results = await withBleSession((ble) => scanOnce(ble));
         await setBridgeState({ last_scan_found: results.length });
         logInfo("Scan finished.", { found: results.length });
         for (const item of results) {
@@ -574,7 +591,7 @@ async function main() {
   });
 
   if (args.scan) {
-    const results = await scanOnce();
+    const results = await withBleSession((ble) => scanOnce(ble));
     // eslint-disable-next-line no-console
     console.log("Address           RSSI  Name");
     results.forEach((d) => {
@@ -582,7 +599,6 @@ async function main() {
       console.log(`${d.address} ${d.rssi} ${d.name}`);
     });
     stopping = true;
-    await ble.destroy();
     mqttClient.end(true);
     return;
   }
@@ -595,11 +611,6 @@ async function main() {
     cancelPoll();
     try {
       await mqttPublish(mqttClient, bridgeTopics.bridgeAvailabilityTopic, "offline", { retain: true });
-    } catch {
-      // ignore
-    }
-    try {
-      await ble.destroy();
     } catch {
       // ignore
     }
