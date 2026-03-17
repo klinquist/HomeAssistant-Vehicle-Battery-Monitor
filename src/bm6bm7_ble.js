@@ -210,21 +210,30 @@ async function findCharacteristicByUuid(gattServer, shortUuid) {
 async function readBatteryDataBluez(device, model, readTimeoutMs) {
   const key = model === "bm6" ? BM6_KEY : BM7_KEY;
   const command = encryptCommand(key);
+  const modelLabel = model.toUpperCase();
 
   async function runReadAttempt() {
     let notifyChar = null;
     try {
-      await withTimeout(device.connect(), readTimeoutMs, `Timed out connecting to ${model.toUpperCase()}.`);
-      const gattServer = await device.gatt();
-      const writeChar = await findCharacteristicByUuid(gattServer, WRITE_UUID);
-      notifyChar = await findCharacteristicByUuid(gattServer, NOTIFY_UUID);
-      if (!writeChar || !notifyChar) throw new Error(`Missing required characteristics on ${model.toUpperCase()}.`);
+      await withTimeout(device.connect(), readTimeoutMs, `Timed out connecting to ${modelLabel}.`);
+      const gattServer = await withTimeout(device.gatt(), readTimeoutMs, `Timed out opening GATT on ${modelLabel}.`);
+      const writeChar = await withTimeout(
+        findCharacteristicByUuid(gattServer, WRITE_UUID),
+        readTimeoutMs,
+        `Timed out discovering write characteristic on ${modelLabel}.`
+      );
+      notifyChar = await withTimeout(
+        findCharacteristicByUuid(gattServer, NOTIFY_UUID),
+        readTimeoutMs,
+        `Timed out discovering notify characteristic on ${modelLabel}.`
+      );
+      if (!writeChar || !notifyChar) throw new Error(`Missing required characteristics on ${modelLabel}.`);
 
       let cleanup = () => {};
       const dataPromise = new Promise((resolve, reject) => {
         const timeout = setTimeout(() => {
           cleanup();
-          reject(new Error(`Timed out waiting for ${model.toUpperCase()} data.`));
+          reject(new Error(`Timed out waiting for ${modelLabel} data.`));
         }, readTimeoutMs);
 
         function onValueChanged(buffer) {
@@ -251,13 +260,25 @@ async function readBatteryDataBluez(device, model, readTimeoutMs) {
       try {
         if (typeof notifyChar.stopNotifications === "function") {
           try {
-            await notifyChar.stopNotifications();
+            await withTimeout(
+              notifyChar.stopNotifications(),
+              readTimeoutMs,
+              `Timed out stopping stale notifications on ${modelLabel}.`
+            );
           } catch {
             // ignore
           }
         }
-        await notifyChar.startNotifications();
-        await writeChar.writeValueWithResponse(command);
+        await withTimeout(
+          notifyChar.startNotifications(),
+          readTimeoutMs,
+          `Timed out starting notifications on ${modelLabel}.`
+        );
+        await withTimeout(
+          writeChar.writeValueWithResponse(command),
+          readTimeoutMs,
+          `Timed out writing read command to ${modelLabel}.`
+        );
         return await dataPromise;
       } catch (err) {
         cleanup();
@@ -267,7 +288,11 @@ async function readBatteryDataBluez(device, model, readTimeoutMs) {
         cleanup();
         if (typeof notifyChar.stopNotifications === "function") {
           try {
-            await notifyChar.stopNotifications();
+            await withTimeout(
+              notifyChar.stopNotifications(),
+              readTimeoutMs,
+              `Timed out stopping notifications on ${modelLabel}.`
+            );
           } catch {
             // ignore
           }
@@ -275,7 +300,7 @@ async function readBatteryDataBluez(device, model, readTimeoutMs) {
       }
     } finally {
       try {
-        await device.disconnect();
+        await withTimeout(device.disconnect(), readTimeoutMs, `Timed out disconnecting from ${modelLabel}.`);
       } catch {
         // ignore
       }
