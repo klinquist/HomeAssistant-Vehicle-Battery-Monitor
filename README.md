@@ -53,6 +53,13 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 
 This is meant to run continuously under a process manager like `pm2` (or systemd).
 
+## Changelog
+
+Newest entries first. Keep this section short and focused on user-visible behavior or operational debugging changes.
+
+- 2026-03-20: Improved Linux/BlueZ resilience after transient BLE failures. The bridge now treats GATT setup timeouts as transient, resets the BLE session before retrying, and refreshes device handles after reconnecting.
+- 2026-03-17: Added `readTimeoutMs` coverage around the full Linux/BlueZ read path so stalled GATT/discovery/notification operations fail with explicit timeout errors instead of hanging indefinitely.
+
 ## Autostart (Raspberry Pi)
 
 Raspberry Pi OS uses `systemd` by default. You can install a service with the included script:

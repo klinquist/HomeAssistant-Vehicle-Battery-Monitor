@@ -44,7 +44,12 @@ function isTransientReadConnectionError(errOrMessage) {
     text.includes("not connected") ||
     text.includes("failed to connect") ||
     text.includes("connection attempt failed") ||
-    text.includes("operation already in progress")
+    text.includes("operation already in progress") ||
+    text.includes("timed out opening gatt") ||
+    text.includes("timed out discovering write characteristic") ||
+    text.includes("timed out discovering notify characteristic") ||
+    text.includes("timed out starting notifications") ||
+    text.includes("timed out writing read command")
   );
 }
 
@@ -319,9 +324,23 @@ async function main() {
 
   async function withBleSession(task) {
     return withBleLock(async () => {
-      const ble = await createBleClient();
+      let ble = await createBleClient();
+      const session = {
+        get ble() {
+          return ble;
+        },
+        async reset() {
+          try {
+            await ble.destroy();
+          } catch {
+            // ignore
+          }
+          ble = await createBleClient();
+          return ble;
+        },
+      };
       try {
-        return await task(ble);
+        return await task(session);
       } finally {
         try {
           await ble.destroy();
@@ -400,7 +419,7 @@ async function main() {
     } else if (!known.size) {
       try {
         logInfo("Pre-scan started.");
-        const preScanResults = await withBleSession((ble) => scanOnce(ble));
+        const preScanResults = await withBleSession((session) => scanOnce(session.ble));
         logInfo("Pre-scan finished.", { found: preScanResults.length });
       } catch (err) {
         logError("Pre-scan failed.", err && err.message ? err.message : err);
@@ -423,15 +442,17 @@ async function main() {
 
     if (!eligibleAddresses.length) return;
 
-    const pollCounts = await withBleSession(async (ble) => {
-      const found = await ble.findDevicesByAddress(eligibleAddresses, config.connectScanMs);
+    const pollCounts = await withBleSession(async (session) => {
+      let ble = session.ble;
+      let found = await ble.findDevicesByAddress(eligibleAddresses, config.connectScanMs);
       if (found.size !== eligibleAddresses.length) {
         const missing = eligibleAddresses.filter((address) => !found.get(address));
         logInfo("Devices missing after connect scan.", { missing, found: found.size, expected: eligibleAddresses.length });
       }
       let okCount = 0;
       let failCount = 0;
-      for (const address of eligibleAddresses) {
+      for (let index = 0; index < eligibleAddresses.length; index += 1) {
+        const address = eligibleAddresses[index];
         const device = known.get(address);
         if (!device) continue;
 
@@ -457,6 +478,7 @@ async function main() {
         const label = device.name ? `${device.name} (${address})` : address;
 
         const attemptRead = async (attempt, attemptModel) => {
+          if (!handle) throw new Error("Device not found in connect scan.");
           logInfo("Read attempt.", { address, model: attemptModel, attempt });
           return ble.readBatteryData(handle, attemptModel, config.readTimeoutMs);
         };
@@ -479,10 +501,18 @@ async function main() {
             } else {
               if (isTransientReadConnectionError(message)) {
                 try {
-                  logInfo("Refreshing device handle after connection error.", { address });
-                  const refound = await ble.findDevicesByAddress([address], Math.min(config.connectScanMs, 12000));
-                  const refreshedHandle = refound.get(address);
-                  if (refreshedHandle) handle = refreshedHandle;
+                  logInfo("Resetting BLE session after connection error.", { address, error: message });
+                  ble = await session.reset();
+                  const remainingAddresses = eligibleAddresses.slice(index);
+                  found = await ble.findDevicesByAddress(remainingAddresses, Math.min(config.connectScanMs, 12000));
+                  const refreshedHandle = found.get(address);
+                  if (refreshedHandle) {
+                    handle = refreshedHandle;
+                    logInfo("Device handle refreshed after session reset.", { address });
+                  } else {
+                    handle = null;
+                    logInfo("Device missing after session reset.", { address });
+                  }
                 } catch {
                   // ignore and fall through to retry with current handle
                 }
@@ -579,7 +609,7 @@ async function main() {
       logInfo("Scan command received.");
       try {
         await setBridgeState({ status: "scanning", last_scan_started: nowIso(), last_scan_found: 0, last_error: "" });
-        const results = await withBleSession((ble) => scanOnce(ble));
+        const results = await withBleSession((session) => scanOnce(session.ble));
         await setBridgeState({ last_scan_found: results.length });
         logInfo("Scan finished.", { found: results.length });
         for (const item of results) {
@@ -616,7 +646,7 @@ async function main() {
   });
 
   if (args.scan) {
-    const results = await withBleSession((ble) => scanOnce(ble));
+    const results = await withBleSession((session) => scanOnce(session.ble));
     // eslint-disable-next-line no-console
     console.log("Address           RSSI  Name");
     results.forEach((d) => {
