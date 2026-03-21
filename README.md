@@ -54,6 +54,10 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
   - Watch the bridge process logs (e.g. `journalctl -u <your-service>` if you run it as a systemd service).
     - Logs now include pre-scan timing, per-device read attempts, and retries.
 
+Example Home Assistant dashboard:
+
+![Home Assistant vehicle battery dashboard](vehiclebatteries.png)
+
 This is meant to run continuously under a process manager like `pm2` (or systemd).
 
 ## Changelog
