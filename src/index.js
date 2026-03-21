@@ -117,6 +117,27 @@ function parseArgs(argv) {
   return args;
 }
 
+function parseDailyTime(value) {
+  const trimmed = String(value || "").trim();
+  if (!trimmed) {
+    throw new Error('Missing pollTimeLocal. Use HH:MM in 24-hour local time, for example "02:00".');
+  }
+  const match = /^(\d{1,2}):(\d{2})$/.exec(trimmed);
+  if (!match) {
+    throw new Error(`Invalid pollTimeLocal "${value}". Use HH:MM in 24-hour local time.`);
+  }
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
+    throw new Error(`Invalid pollTimeLocal "${value}". Use HH:MM in 24-hour local time.`);
+  }
+  return {
+    hour,
+    minute,
+    label: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+  };
+}
+
 function readJson(filePath) {
   const raw = fs.readFileSync(filePath, "utf8");
   return JSON.parse(raw);
@@ -137,6 +158,7 @@ function loadConfig(args) {
   const bridgeId = resolveBridgeId(bridgeIdRaw);
   const clientIdRaw = typeof mqttCfg.clientId === "string" ? mqttCfg.clientId.trim() : "";
   const defaultClientId = "bm6bm7-bridge";
+  const pollTimeLocal = parseDailyTime(cfg.pollTimeLocal === undefined ? "02:00" : cfg.pollTimeLocal);
   const clientId =
     clientIdRaw && (!bridgeId || clientIdRaw !== defaultClientId)
       ? clientIdRaw
@@ -156,7 +178,7 @@ function loadConfig(args) {
     scanMs: Number.isFinite(cfg.scanMs) ? cfg.scanMs : 7000,
     connectScanMs: Number.isFinite(cfg.connectScanMs) ? cfg.connectScanMs : 30000,
     readTimeoutMs: Number.isFinite(cfg.readTimeoutMs) ? cfg.readTimeoutMs : 20000,
-    pollIntervalSec: Number.isFinite(cfg.pollIntervalSec) ? cfg.pollIntervalSec : 86400,
+    pollTimeLocal,
     failureBackoffSec: Number.isFinite(cfg.failureBackoffSec) ? cfg.failureBackoffSec : 300,
     unavailableAfterHours: Number.isFinite(cfg.unavailableAfterHours) ? cfg.unavailableAfterHours : 72,
   };
@@ -240,8 +262,9 @@ async function main() {
   const lastReadOkMsByAddress = new Map(); // address -> ms
   const availabilityByAddress = new Map(); // address -> boolean
   const backoffUntilMsByAddress = new Map(); // address -> ms
+  const scheduledPollIntervalSec = 24 * 60 * 60;
   const unavailableAfterMs = Math.max(0, config.unavailableAfterHours) * 60 * 60 * 1000;
-  const expireAfterSec = Math.max(0, Math.round(Math.max(config.pollIntervalSec * 2 + 30, unavailableAfterMs / 1000 + 30)));
+  const expireAfterSec = Math.max(0, Math.round(Math.max(scheduledPollIntervalSec * 2 + 30, unavailableAfterMs / 1000 + 30)));
   const modelWarningOnce = new Set();
   let scanRunning = false;
 
@@ -300,8 +323,9 @@ async function main() {
       logInfo("MQTT connected; bridge ready.", {
         connectScanMs: config.connectScanMs,
         readTimeoutMs: config.readTimeoutMs,
+        pollTimeLocal: config.pollTimeLocal.label,
         unavailableAfterHours: config.unavailableAfterHours,
-        pollIntervalSec: config.pollIntervalSec,
+        scheduledDailyIntervalSec: scheduledPollIntervalSec,
       });
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -575,8 +599,17 @@ async function main() {
     logInfo("Poll finished.", { ok: pollCounts.okCount, fail: pollCounts.failCount });
   }
 
+  function getNextScheduledPollDelayMs() {
+    const now = new Date();
+    const next = new Date(now);
+    next.setHours(config.pollTimeLocal.hour, config.pollTimeLocal.minute, 0, 0);
+    if (next.getTime() <= now.getTime()) {
+      next.setDate(next.getDate() + 1);
+    }
+    return next.getTime() - now.getTime();
+  }
+
   function schedulePollLoop() {
-    const pollMs = Math.max(5, config.pollIntervalSec) * 1000;
     let timer = null;
 
     const tick = async () => {
@@ -588,8 +621,9 @@ async function main() {
         console.error("Poll failed:", err && err.message ? err.message : err);
       } finally {
         if (!stopping) {
-          timer = setTimeout(tick, pollMs);
-          await announceNextPoll(pollMs, "interval");
+          const delayMs = getNextScheduledPollDelayMs();
+          timer = setTimeout(tick, delayMs);
+          await announceNextPoll(delayMs, "daily_time");
         }
       }
     };

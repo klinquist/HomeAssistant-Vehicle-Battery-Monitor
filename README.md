@@ -35,7 +35,7 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 - `scanMs`: BLE scan duration in ms when you press “Scan BM6/BM7”.
 - `connectScanMs`: How long to scan for known devices before polling.
 - `readTimeoutMs`: Timeout waiting for a device to respond.
-- `pollIntervalSec`: How often to poll all known devices (default once per day).
+- `pollTimeLocal`: Daily local poll time in `HH:MM` 24-hour format. Default `02:00`.
 - `failureBackoffSec`: Backoff time after a failed read before trying that device again.
 - `unavailableAfterHours`: How long to keep the last successful reading available in Home Assistant after read failures. Default `72`.
 
@@ -44,7 +44,8 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 - After the bridge starts, it publishes two MQTT-discovered buttons in Home Assistant:
   - `Scan BM6/BM7`: scans for devices and adds them (publishes discovery + stores them in a retained MQTT registry)
   - `Update BM6/BM7 Now`: immediately polls all known devices and updates sensor states
-- The bridge also polls on a schedule (`pollIntervalSec`, default once per day).
+- The bridge also polls on a schedule.
+  Default behavior: one startup poll shortly after launch, then a daily poll at `02:00` local time.
 - If a read fails, the last retained sensor values stay available until the device has gone longer than `unavailableAfterHours` without a successful read.
 - For visibility/debugging:
   - Use the `BM6/BM7 Bridge Status` sensor (attributes include last scan/poll times and counts).
@@ -59,6 +60,7 @@ This is meant to run continuously under a process manager like `pm2` (or systemd
 
 Newest entries first. Keep this section short and focused on user-visible behavior or operational debugging changes.
 
+- 2026-03-21: Added `pollTimeLocal` with a default daily run time of `02:00` local time, so scheduled polls are tied to a clock time instead of 24 hours after process launch.
 - 2026-03-21: Added configurable delayed unavailability. Device sensors now stay available until a successful read is older than `unavailableAfterHours` (default `72`), and the last-good-read timestamp is retained in the MQTT registry.
 - 2026-03-20: Improved Linux/BlueZ resilience after transient BLE failures. The bridge now treats GATT setup timeouts as transient, resets the BLE session before retrying, and refreshes device handles after reconnecting.
 - 2026-03-17: Added `readTimeoutMs` coverage around the full Linux/BlueZ read path so stalled GATT/discovery/notification operations fail with explicit timeout errors instead of hanging indefinitely.

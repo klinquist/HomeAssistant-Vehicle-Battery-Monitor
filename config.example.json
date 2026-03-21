@@ -10,7 +10,7 @@
   "scanMs": 7000,
   "connectScanMs": 30000,
   "readTimeoutMs": 20000,
-  "pollIntervalSec": 86400,
+  "pollTimeLocal": "02:00",
   "failureBackoffSec": 300,
   "unavailableAfterHours": 72
 }
