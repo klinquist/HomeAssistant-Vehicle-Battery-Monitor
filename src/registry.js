@@ -21,6 +21,7 @@ function parseRegistryPayload(payload) {
       name: typeof obj.name === "string" ? obj.name : "",
       createdAt: typeof obj.createdAt === "string" ? obj.createdAt : "",
       updatedAt: typeof obj.updatedAt === "string" ? obj.updatedAt : "",
+      lastReadOkAt: typeof obj.lastReadOkAt === "string" ? obj.lastReadOkAt : "",
     };
   } catch {
     return null;
@@ -35,6 +36,7 @@ function buildRegistryPayload(entry) {
       name: entry.name || "",
       createdAt: entry.createdAt || "",
       updatedAt: entry.updatedAt || "",
+      lastReadOkAt: entry.lastReadOkAt || "",
     },
     null,
     2
@@ -50,6 +52,7 @@ function mergeEntry(existing, incoming) {
     name: incoming.name || (existing && existing.name) || "",
     createdAt,
     updatedAt: nowIso,
+    lastReadOkAt: incoming.lastReadOkAt || (existing && existing.lastReadOkAt) || "",
   };
 }
 

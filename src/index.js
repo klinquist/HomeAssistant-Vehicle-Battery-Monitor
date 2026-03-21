@@ -158,6 +158,7 @@ function loadConfig(args) {
     readTimeoutMs: Number.isFinite(cfg.readTimeoutMs) ? cfg.readTimeoutMs : 20000,
     pollIntervalSec: Number.isFinite(cfg.pollIntervalSec) ? cfg.pollIntervalSec : 86400,
     failureBackoffSec: Number.isFinite(cfg.failureBackoffSec) ? cfg.failureBackoffSec : 300,
+    unavailableAfterHours: Number.isFinite(cfg.unavailableAfterHours) ? cfg.unavailableAfterHours : 72,
   };
 }
 
@@ -236,11 +237,11 @@ async function main() {
   const known = new Map(); // address -> {address, name, model, createdAt, updatedAt}
   const discoveredModels = new Map(); // address -> model (bm6/bm7)
   const discoverySignature = new Map(); // address -> signature
-  const lastSeenMsByAddress = new Map(); // address -> ms
+  const lastReadOkMsByAddress = new Map(); // address -> ms
   const availabilityByAddress = new Map(); // address -> boolean
   const backoffUntilMsByAddress = new Map(); // address -> ms
-  const expireAfterSec = Math.max(0, Math.round(config.pollIntervalSec * 2 + 30));
-  const seenRecentlyMs = Math.max(config.pollIntervalSec * 2 * 1000, 60 * 60 * 1000);
+  const unavailableAfterMs = Math.max(0, config.unavailableAfterHours) * 60 * 60 * 1000;
+  const expireAfterSec = Math.max(0, Math.round(Math.max(config.pollIntervalSec * 2 + 30, unavailableAfterMs / 1000 + 30)));
   const modelWarningOnce = new Set();
   let scanRunning = false;
 
@@ -299,6 +300,7 @@ async function main() {
       logInfo("MQTT connected; bridge ready.", {
         connectScanMs: config.connectScanMs,
         readTimeoutMs: config.readTimeoutMs,
+        unavailableAfterHours: config.unavailableAfterHours,
         pollIntervalSec: config.pollIntervalSec,
       });
     } catch (err) {
@@ -353,14 +355,10 @@ async function main() {
 
   async function scanOnce(ble) {
     const results = await ble.scanDevices(config.scanMs);
-    const now = Date.now();
     for (const item of results) {
       const address = normalizeAddress(item.address);
       const model = inferModelFromAdvertisedName(item.name);
       if (model) discoveredModels.set(address, model);
-      if (Number.isFinite(item.rssi)) {
-        lastSeenMsByAddress.set(address, now);
-      }
 
       if (!known.has(address)) {
         const defaultName = item.name === "BM6" ? `BM6 ${address}` : `BM7 ${address}`;
@@ -396,6 +394,24 @@ async function main() {
       // eslint-disable-next-line no-console
       console.error("Availability publish failed:", err && err.message ? err.message : err);
     }
+  }
+
+  function getLastReadOkMs(address) {
+    const memoryMs = lastReadOkMsByAddress.get(address) || 0;
+    const device = known.get(address);
+    const registryMs = device && device.lastReadOkAt ? Date.parse(device.lastReadOkAt) : 0;
+    return Math.max(memoryMs, Number.isFinite(registryMs) ? registryMs : 0);
+  }
+
+  function shouldRemainAvailable(address) {
+    if (!(unavailableAfterMs > 0)) return false;
+    const lastReadOkMs = getLastReadOkMs(address);
+    if (!(lastReadOkMs > 0)) return false;
+    return Date.now() - lastReadOkMs < unavailableAfterMs;
+  }
+
+  async function refreshAvailabilityFromHistory(address) {
+    await setAvailability(address, shouldRemainAvailable(address));
   }
 
   async function ensureDiscoveryPublished(address) {
@@ -463,13 +479,13 @@ async function main() {
             // eslint-disable-next-line no-console
             console.error(`Skipping ${address}: unknown model. Press Scan or publish registry with model bm6/bm7.`);
           }
-          await setAvailability(address, false);
+          await refreshAvailabilityFromHistory(address);
           continue;
         }
 
         let handle = found.get(address);
         if (!handle) {
-          await setAvailability(address, false);
+          await refreshAvailabilityFromHistory(address);
           logError(`Read failed (${address}).`, "Device not found in connect scan.");
           failCount += 1;
           continue;
@@ -523,9 +539,12 @@ async function main() {
             }
           }
 
+          const readOkAt = nowIso();
+          device.lastReadOkAt = readOkAt;
+          lastReadOkMsByAddress.set(address, Date.parse(readOkAt));
           await publishState(mqttClient, address, reading);
+          await upsertRegistry(device);
           await setAvailability(address, true);
-          lastSeenMsByAddress.set(address, Date.now());
           backoffUntilMsByAddress.delete(address);
           logInfo("Reading ok.", {
             address,
@@ -539,7 +558,7 @@ async function main() {
         } catch (err) {
           // eslint-disable-next-line no-console
           console.error(`Read failed (${address}):`, err && err.message ? err.message : err);
-          await setAvailability(address, false);
+          await refreshAvailabilityFromHistory(address);
           backoffUntilMsByAddress.set(address, Date.now() + Math.max(1, config.failureBackoffSec) * 1000);
           failCount += 1;
         }
@@ -587,9 +606,16 @@ async function main() {
       const entry = parseRegistryPayload(payload);
       if (!entry) return;
       known.set(entry.address, entry);
+      if (entry.lastReadOkAt) {
+        const lastReadOkMs = Date.parse(entry.lastReadOkAt);
+        if (Number.isFinite(lastReadOkMs) && lastReadOkMs > 0) {
+          lastReadOkMsByAddress.set(entry.address, lastReadOkMs);
+        }
+      }
       discoverySignature.delete(entry.address);
       try {
         await ensureDiscoveryPublished(entry.address);
+        await refreshAvailabilityFromHistory(entry.address);
         await setBridgeState({});
       } catch (err) {
         // eslint-disable-next-line no-console

@@ -11,5 +11,6 @@
   "connectScanMs": 30000,
   "readTimeoutMs": 20000,
   "pollIntervalSec": 86400,
-  "failureBackoffSec": 300
+  "failureBackoffSec": 300,
+  "unavailableAfterHours": 72
 }

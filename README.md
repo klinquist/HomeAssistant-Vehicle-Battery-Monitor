@@ -37,6 +37,7 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 - `readTimeoutMs`: Timeout waiting for a device to respond.
 - `pollIntervalSec`: How often to poll all known devices (default once per day).
 - `failureBackoffSec`: Backoff time after a failed read before trying that device again.
+- `unavailableAfterHours`: How long to keep the last successful reading available in Home Assistant after read failures. Default `72`.
 
 ## Usage (from Home Assistant)
 
@@ -44,6 +45,7 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
   - `Scan BM6/BM7`: scans for devices and adds them (publishes discovery + stores them in a retained MQTT registry)
   - `Update BM6/BM7 Now`: immediately polls all known devices and updates sensor states
 - The bridge also polls on a schedule (`pollIntervalSec`, default once per day).
+- If a read fails, the last retained sensor values stay available until the device has gone longer than `unavailableAfterHours` without a successful read.
 - For visibility/debugging:
   - Use the `BM6/BM7 Bridge Status` sensor (attributes include last scan/poll times and counts).
   - The status sensor also includes `next_poll_at` so you can see when the next scheduled poll will run.
@@ -57,6 +59,7 @@ This is meant to run continuously under a process manager like `pm2` (or systemd
 
 Newest entries first. Keep this section short and focused on user-visible behavior or operational debugging changes.
 
+- 2026-03-21: Added configurable delayed unavailability. Device sensors now stay available until a successful read is older than `unavailableAfterHours` (default `72`), and the last-good-read timestamp is retained in the MQTT registry.
 - 2026-03-20: Improved Linux/BlueZ resilience after transient BLE failures. The bridge now treats GATT setup timeouts as transient, resets the BLE session before retrying, and refreshes device handles after reconnecting.
 - 2026-03-17: Added `readTimeoutMs` coverage around the full Linux/BlueZ read path so stalled GATT/discovery/notification operations fail with explicit timeout errors instead of hanging indefinitely.
 
@@ -78,7 +81,7 @@ Logs: `sudo journalctl -u vehicle-battery-monitor -f`
 
 - Home Assistant cannot “prompt to name” devices when using pure MQTT discovery. The bridge publishes a default name (e.g. `BM6 aa:bb:cc:dd:ee:ff`). You can rename the device/entities in Home Assistant UI.
 - Devices are stored via retained MQTT messages under `bm6bm7/registry/#` (or `bm6bm7/<bridgeId>/registry/#` if you set `mqtt.bridgeId`).
-- If a device isn’t currently in range (e.g. vehicle is away), the bridge skips reads and marks it `offline` via availability.
+- If a device isn’t currently in range (e.g. vehicle is away), the bridge keeps the last successful reading available until `unavailableAfterHours` elapses, then marks it `offline`.
 - Linux is the primary target (BlueZ via `node-ble`). macOS can work via the optional `@abandonware/noble` path.
 
 ## Multiple bridges
