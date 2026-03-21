@@ -1,5 +1,7 @@
 # Vehicle Battery Monitor → Home Assistant (MQTT bridge)
 
+![Home Assistant vehicle battery dashboard](vehiclebatteries.png)
+
 Supports the **Ancel** BM6 or BM7 (BM300 Pro) Bluetooth battery monitors, commonly found on Amazon or AliExpress for $20–40 each.
 
 This runs on a *separate* computer (near the BLE devices), and is intended to run well on a Raspberry Pi. It scans for BM6/BM7 (BM300 Pro) monitors, reads voltage / battery % / temperature, and publishes them to Home Assistant via **MQTT Discovery**.
@@ -53,10 +55,6 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
   - In Home Assistant → MQTT → “Listen to a topic”, listen on `bm6bm7/bridge/#` and `bm6bm7/registry/#`.
   - Watch the bridge process logs (e.g. `journalctl -u <your-service>` if you run it as a systemd service).
     - Logs now include pre-scan timing, per-device read attempts, and retries.
-
-Example Home Assistant dashboard:
-
-![Home Assistant vehicle battery dashboard](vehiclebatteries.png)
 
 This is meant to run continuously as a `systemd` service. On Raspberry Pi OS, `systemd` is the preferred and documented deployment method for this project.
 
