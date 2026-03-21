@@ -58,20 +58,21 @@ Example Home Assistant dashboard:
 
 ![Home Assistant vehicle battery dashboard](vehiclebatteries.png)
 
-This is meant to run continuously under a process manager like `pm2` (or systemd).
+This is meant to run continuously as a `systemd` service. On Raspberry Pi OS, `systemd` is the preferred and documented deployment method for this project.
 
 ## Changelog
 
 Newest entries first. Keep this section short and focused on user-visible behavior or operational debugging changes.
 
+- 2026-03-21: Updated the README to make `systemd` the preferred long-running deployment method, matching the included installer script for Raspberry Pi OS.
 - 2026-03-21: Added `pollTimeLocal` with a default daily run time of `02:00` local time, so scheduled polls are tied to a clock time instead of 24 hours after process launch.
 - 2026-03-21: Added configurable delayed unavailability. Device sensors now stay available until a successful read is older than `unavailableAfterHours` (default `72`), and the last-good-read timestamp is retained in the MQTT registry.
 - 2026-03-20: Improved Linux/BlueZ resilience after transient BLE failures. The bridge now treats GATT setup timeouts as transient, resets the BLE session before retrying, and refreshes device handles after reconnecting.
 - 2026-03-17: Added `readTimeoutMs` coverage around the full Linux/BlueZ read path so stalled GATT/discovery/notification operations fail with explicit timeout errors instead of hanging indefinitely.
 
-## Autostart (Raspberry Pi)
+## Recommended Service Setup (Raspberry Pi)
 
-Raspberry Pi OS uses `systemd` by default. You can install a service with the included script:
+Raspberry Pi OS uses `systemd` by default, and this is the recommended way to keep the bridge running across reboots. You can install a service with the included script:
 
 ```sh
 cd HomeAssistant-Vehicle-Battery-Monitor
