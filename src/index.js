@@ -79,6 +79,24 @@ function parseBleRecoveryConfig(cfg) {
   };
 }
 
+function parseHostRecoveryConfig(cfg) {
+  const raw = cfg && typeof cfg === "object" ? cfg : {};
+  const failureCount = Number.isFinite(raw.failureCount) ? Math.max(1, Math.floor(raw.failureCount)) : 2;
+  const cooldownSec = Number.isFinite(raw.cooldownSec) ? Math.max(0, raw.cooldownSec) : 21600;
+  const commandTimeoutMs = Number.isFinite(raw.commandTimeoutMs) ? Math.max(1000, raw.commandTimeoutMs) : 30000;
+  const stateFile = typeof raw.stateFile === "string" && raw.stateFile.trim()
+    ? raw.stateFile.trim()
+    : "/var/tmp/bm6bm7-host-recovery.json";
+  return {
+    enabled: Boolean(raw.enabled),
+    failureCount,
+    cooldownSec,
+    commandTimeoutMs,
+    stateFile,
+    command: parseCommand(raw.command),
+  };
+}
+
 function formatCommandForLog(command) {
   return command.map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(" ");
 }
@@ -136,6 +154,26 @@ function runCommand(command, timeoutMs) {
       finish(new Error(output ? `Recovery command failed with ${exitLabel}: ${output}` : `Recovery command failed with ${exitLabel}.`));
     });
   });
+}
+
+function readStateFile(filePath) {
+  if (!filePath) return {};
+  try {
+    if (!fs.existsSync(filePath)) return {};
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeStateFile(filePath, state) {
+  if (!filePath) throw new Error("Missing state file path.");
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmpPath = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(state, null, 2)}\n`);
+  fs.renameSync(tmpPath, filePath);
 }
 
 function normalizeBridgeId(value) {
@@ -267,6 +305,7 @@ function loadConfig(args) {
     failureBackoffSec: Number.isFinite(cfg.failureBackoffSec) ? cfg.failureBackoffSec : 300,
     unavailableAfterHours: Number.isFinite(cfg.unavailableAfterHours) ? cfg.unavailableAfterHours : 72,
     bleRecovery: parseBleRecoveryConfig(cfg.bleRecovery),
+    hostRecovery: parseHostRecoveryConfig(cfg.hostRecovery),
   };
 }
 
@@ -355,6 +394,10 @@ async function main() {
   let scanRunning = false;
   let bleConnectionFailureCount = 0;
   let lastBleRecoveryMs = 0;
+  const hostRecoveryState = readStateFile(config.hostRecovery.stateFile);
+  let hostRecoveryFailureCount = Number.isFinite(hostRecoveryState.consecutiveConnectionFailurePolls)
+    ? Math.max(0, Math.floor(hostRecoveryState.consecutiveConnectionFailurePolls))
+    : 0;
 
   const bridgeState = {
     status: "starting",
@@ -418,6 +461,14 @@ async function main() {
               failureCount: config.bleRecovery.failureCount,
               cooldownSec: config.bleRecovery.cooldownSec,
               command: formatCommandForLog(config.bleRecovery.command),
+            }
+          : "disabled",
+        hostRecovery: config.hostRecovery.enabled
+          ? {
+              failureCount: config.hostRecovery.failureCount,
+              cooldownSec: config.hostRecovery.cooldownSec,
+              stateFile: config.hostRecovery.stateFile,
+              command: formatCommandForLog(config.hostRecovery.command),
             }
           : "disabled",
         scheduledDailyIntervalSec: scheduledPollIntervalSec,
@@ -490,6 +541,123 @@ async function main() {
       const error = formatErr(err);
       logError("BLE adapter recovery command failed.", error);
       await setBridgeState({ status: "polling", last_error: error });
+    }
+  }
+
+  function getHostRecoveryLastRunMs() {
+    const parsed = Date.parse(hostRecoveryState.lastRecoveryAt || "");
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+
+  function saveHostRecoveryState(patch) {
+    Object.assign(hostRecoveryState, patch, { updatedAt: nowIso() });
+    writeStateFile(config.hostRecovery.stateFile, hostRecoveryState);
+  }
+
+  function resetHostRecoveryFailureCount(reason) {
+    if (!config.hostRecovery.enabled || hostRecoveryFailureCount === 0) return;
+    hostRecoveryFailureCount = 0;
+    try {
+      saveHostRecoveryState({
+        consecutiveConnectionFailurePolls: 0,
+        lastResetAt: nowIso(),
+        lastResetReason: reason || "",
+      });
+    } catch (err) {
+      logError("Host recovery state reset failed.", formatErr(err));
+    }
+  }
+
+  async function maybeRunHostRecovery(pollResult) {
+    const recovery = config.hostRecovery;
+    if (!recovery.enabled) return;
+
+    if (!pollResult || !(pollResult.connectionFailCount > 0) || pollResult.okCount > 0) {
+      resetHostRecoveryFailureCount(pollResult && pollResult.okCount > 0 ? "poll_had_success" : "poll_without_connection_failure");
+      return;
+    }
+
+    hostRecoveryFailureCount += 1;
+    try {
+      saveHostRecoveryState({
+        consecutiveConnectionFailurePolls: hostRecoveryFailureCount,
+        lastFailureAt: nowIso(),
+        lastFailureReason: pollResult.lastConnectionError || "",
+      });
+    } catch (err) {
+      logError("Host recovery state write failed; reboot recovery skipped.", formatErr(err));
+      return;
+    }
+
+    if (hostRecoveryFailureCount < recovery.failureCount) {
+      logInfo("Host recovery threshold not reached.", {
+        failures: hostRecoveryFailureCount,
+        threshold: recovery.failureCount,
+      });
+      return;
+    }
+
+    if (!recovery.command.length) {
+      logError("Host recovery skipped because hostRecovery.command is empty.", {
+        error: pollResult.lastConnectionError || "",
+      });
+      return;
+    }
+
+    const cooldownMs = recovery.cooldownSec * 1000;
+    const lastRunMs = getHostRecoveryLastRunMs();
+    const elapsedMs = lastRunMs ? Date.now() - lastRunMs : Infinity;
+    if (elapsedMs < cooldownMs) {
+      logInfo("Host recovery skipped during cooldown.", {
+        cooldownRemainingSec: Math.ceil((cooldownMs - elapsedMs) / 1000),
+      });
+      return;
+    }
+
+    const commandLabel = formatCommandForLog(recovery.command);
+    const recoveryAt = nowIso();
+    try {
+      saveHostRecoveryState({
+        consecutiveConnectionFailurePolls: 0,
+        lastRecoveryAt: recoveryAt,
+        lastRecoveryReason: pollResult.lastConnectionError || "",
+        lastRecoveryCommand: commandLabel,
+        recoveryPending: true,
+      });
+      hostRecoveryFailureCount = 0;
+    } catch (err) {
+      logError("Host recovery state write failed; reboot recovery skipped.", formatErr(err));
+      return;
+    }
+
+    logInfo("Running host recovery command.", {
+      error: pollResult.lastConnectionError || "",
+      command: commandLabel,
+      stateFile: recovery.stateFile,
+    });
+    await setBridgeState({ status: "recovering_host", last_error: `Host recovery after: ${pollResult.lastConnectionError || "BLE failure"}` });
+
+    try {
+      const result = await runCommand(recovery.command, recovery.commandTimeoutMs);
+      logInfo("Host recovery command finished.", {
+        command: commandLabel,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+      });
+      try {
+        saveHostRecoveryState({ recoveryPending: false, lastRecoveryCommandFinishedAt: nowIso() });
+      } catch (err) {
+        logError("Host recovery state update failed.", formatErr(err));
+      }
+    } catch (err) {
+      const error = formatErr(err);
+      logError("Host recovery command failed.", error);
+      try {
+        saveHostRecoveryState({ recoveryPending: false, lastRecoveryError: error });
+      } catch (stateErr) {
+        logError("Host recovery state update failed.", formatErr(stateErr));
+      }
+      await setBridgeState({ status: "idle", last_error: error });
     }
   }
 
@@ -673,7 +841,7 @@ async function main() {
       } else {
         logInfo("Poll skipped because no devices are known.");
       }
-      return { okCount: 0, failCount: 0, retryDelayMs };
+      return { okCount: 0, failCount: 0, connectionFailCount: 0, lastConnectionError: "", retryDelayMs };
     }
 
     const pollCounts = await withBleSession(async (session) => {
@@ -685,6 +853,8 @@ async function main() {
       }
       let okCount = 0;
       let failCount = 0;
+      let connectionFailCount = 0;
+      let lastConnectionError = "";
       for (let index = 0; index < eligibleAddresses.length; index += 1) {
         const address = eligibleAddresses[index];
         const device = known.get(address);
@@ -779,6 +949,8 @@ async function main() {
         } catch (err) {
           const failureMessage = formatErr(err);
           if (isTransientReadConnectionError(failureMessage)) {
+            connectionFailCount += 1;
+            lastConnectionError = failureMessage;
             try {
               const recoverAdapter = shouldRunBleAdapterRecovery(address, failureMessage);
               if (recoverAdapter) {
@@ -801,7 +973,7 @@ async function main() {
           failCount += 1;
         }
       }
-      return { okCount, failCount };
+      return { okCount, failCount, connectionFailCount, lastConnectionError };
     });
     const retryDelayMs = pollCounts.failCount > 0 ? getNextFailureRetryDelayMs(addresses) : 0;
 
@@ -814,9 +986,18 @@ async function main() {
     logInfo("Poll finished.", {
       ok: pollCounts.okCount,
       fail: pollCounts.failCount,
+      connectionFail: pollCounts.connectionFailCount,
       retryInSec: retryDelayMs ? Math.ceil(retryDelayMs / 1000) : 0,
     });
-    return { okCount: pollCounts.okCount, failCount: pollCounts.failCount, retryDelayMs };
+    const result = {
+      okCount: pollCounts.okCount,
+      failCount: pollCounts.failCount,
+      connectionFailCount: pollCounts.connectionFailCount,
+      lastConnectionError: pollCounts.lastConnectionError,
+      retryDelayMs,
+    };
+    await maybeRunHostRecovery(result);
+    return result;
   }
 
   function getNextScheduledPollDelayMs() {

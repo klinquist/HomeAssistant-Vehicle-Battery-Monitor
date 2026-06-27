@@ -20,5 +20,13 @@
     "commandTimeoutMs": 30000,
     "waitAfterMs": 5000,
     "command": ["systemctl", "restart", "bluetooth"]
+  },
+  "hostRecovery": {
+    "enabled": false,
+    "failureCount": 2,
+    "cooldownSec": 21600,
+    "commandTimeoutMs": 30000,
+    "stateFile": "/var/tmp/bm6bm7-host-recovery.json",
+    "command": ["systemctl", "reboot"]
   }
 }

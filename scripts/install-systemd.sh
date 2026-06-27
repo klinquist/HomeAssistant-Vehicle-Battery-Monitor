@@ -80,7 +80,7 @@ try {
 }
 const expected = Array.from(new Set(collectPaths(example))).sort();
 const missing = expected.filter((path) => !hasPath(config, path));
-const optionalPrefixes = ["bleRecovery"];
+const optionalPrefixes = ["bleRecovery", "hostRecovery"];
 const isOptional = (path) => optionalPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`));
 const missingRequired = missing.filter((path) => !isOptional(path));
 const missingOptional = missing.filter(isOptional);

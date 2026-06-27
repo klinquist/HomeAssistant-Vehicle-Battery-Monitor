@@ -47,6 +47,13 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
   - `commandTimeoutMs`: Timeout for the recovery command. Default/example `30000`.
   - `waitAfterMs`: Delay after the command before reconnecting to BlueZ. Default/example `5000`.
   - `command`: Command argv array. Example: `["systemctl", "restart", "bluetooth"]`.
+- `hostRecovery`: Optional last-resort command recovery for hosts that only recover BLE after reboot.
+  - `enabled`: Set to `true` to run the recovery command after repeated connection-layer failed polls with no successful readings.
+  - `failureCount`: Failed polls with connection-layer BLE errors and no successful readings before recovery runs. Default/example `2`.
+  - `cooldownSec`: Minimum seconds between host recovery runs, persisted in `stateFile`. Default/example `21600`.
+  - `commandTimeoutMs`: Timeout for the recovery command. Default/example `30000`.
+  - `stateFile`: Persistent recovery state file used to prevent reboot loops. Default/example `/var/tmp/bm6bm7-host-recovery.json`.
+  - `command`: Command argv array. Example: `["systemctl", "reboot"]`.
 
 ## Usage (from Home Assistant)
 
@@ -72,6 +79,7 @@ Newest entries first. Keep this section short and focused on user-visible behavi
 
 - 2026-06-27: Added optional `bleRecovery` command support. When enabled, repeated connection-layer BLE failures can restart the local Bluetooth stack before the bridge recreates its BLE client.
 - 2026-06-27: Failed scheduled polls now schedule a retry after `failureBackoffSec` instead of waiting until the next daily poll.
+- 2026-06-27: Added optional `hostRecovery` command support for last-resort reboot recovery after repeated connection-layer BLE poll failures, with a persistent cooldown state file to avoid reboot loops.
 - 2026-03-21: Updated the README to make `systemd` the preferred long-running deployment method, matching the included installer script for Raspberry Pi OS.
 - 2026-03-21: Added `pollTimeLocal` with a default daily run time of `02:00` local time, so scheduled polls are tied to a clock time instead of 24 hours after process launch.
 - 2026-03-21: Added configurable delayed unavailability. Device sensors now stay available until a successful read is older than `unavailableAfterHours` (default `72`), and the last-good-read timestamp is retained in the MQTT registry.
@@ -108,6 +116,19 @@ If your logs show errors like `Timed out opening GATT on BM6`, the bridge alread
 ```
 
 The included systemd installer runs the bridge service as root, so `systemctl restart bluetooth` can run without prompting. If you run the bridge as a non-root user, use a recovery command that user is allowed to execute non-interactively.
+
+If adapter recovery still cannot restore GATT on an old Raspberry Pi, enable last-resort host recovery. This only triggers after connection-layer BLE poll failures with no successful readings, writes a persistent state file before running the command, and honors `cooldownSec` after reboot so it does not continually reboot:
+
+```json
+"hostRecovery": {
+  "enabled": true,
+  "failureCount": 2,
+  "cooldownSec": 21600,
+  "commandTimeoutMs": 30000,
+  "stateFile": "/var/tmp/bm6bm7-host-recovery.json",
+  "command": ["systemctl", "reboot"]
+}
+```
 
 ## Notes
 
