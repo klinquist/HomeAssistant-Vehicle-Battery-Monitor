@@ -32,7 +32,6 @@ if [[ ! -f "${CONFIG_FILE}" ]]; then
 fi
 
 "${NODE_PATH}" -e '
-"${NODE_PATH}" -e '
 const fs = require("fs");
 const [,, configPath, examplePath] = process.argv;
 function load(path) {
@@ -81,12 +80,22 @@ try {
 }
 const expected = Array.from(new Set(collectPaths(example))).sort();
 const missing = expected.filter((path) => !hasPath(config, path));
-if (missing.length) {
+const optionalPrefixes = ["bleRecovery"];
+const isOptional = (path) => optionalPrefixes.some((prefix) => path === prefix || path.startsWith(`${prefix}.`));
+const missingRequired = missing.filter((path) => !isOptional(path));
+const missingOptional = missing.filter(isOptional);
+if (missingRequired.length) {
   console.error("Error: config.json is missing required keys:");
-  for (const path of missing) {
+  for (const path of missingRequired) {
     console.error(`  - ${path}`);
   }
   process.exit(1);
+}
+if (missingOptional.length) {
+  console.error("Warning: config.json is missing optional keys; built-in defaults will be used:");
+  for (const path of missingOptional) {
+    console.error(`  - ${path}`);
+  }
 }
 ' "${CONFIG_FILE}" "${EXAMPLE_FILE}"
 

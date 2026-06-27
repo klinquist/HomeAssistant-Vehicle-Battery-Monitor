@@ -40,6 +40,13 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 - `pollTimeLocal`: Daily local poll time in `HH:MM` 24-hour format. Default `02:00`.
 - `failureBackoffSec`: Backoff time after a failed read before trying that device again.
 - `unavailableAfterHours`: How long to keep the last successful reading available in Home Assistant after read failures. Default `72`.
+- `bleRecovery`: Optional command-based recovery for older Raspberry Pi / BlueZ stacks that wedge after GATT timeouts.
+  - `enabled`: Set to `true` to run the recovery command after connection-layer BLE failures such as `Timed out opening GATT`.
+  - `failureCount`: Consecutive connection-layer failures before recovery runs. Default/example `1`.
+  - `cooldownSec`: Minimum seconds between recovery command runs. Default/example `900`.
+  - `commandTimeoutMs`: Timeout for the recovery command. Default/example `30000`.
+  - `waitAfterMs`: Delay after the command before reconnecting to BlueZ. Default/example `5000`.
+  - `command`: Command argv array. Example: `["systemctl", "restart", "bluetooth"]`.
 
 ## Usage (from Home Assistant)
 
@@ -62,6 +69,7 @@ This is meant to run continuously as a `systemd` service. On Raspberry Pi OS, `s
 
 Newest entries first. Keep this section short and focused on user-visible behavior or operational debugging changes.
 
+- 2026-06-27: Added optional `bleRecovery` command support. When enabled, repeated connection-layer BLE failures can restart the local Bluetooth stack before the bridge recreates its BLE client.
 - 2026-03-21: Updated the README to make `systemd` the preferred long-running deployment method, matching the included installer script for Raspberry Pi OS.
 - 2026-03-21: Added `pollTimeLocal` with a default daily run time of `02:00` local time, so scheduled polls are tied to a clock time instead of 24 hours after process launch.
 - 2026-03-21: Added configurable delayed unavailability. Device sensors now stay available until a successful read is older than `unavailableAfterHours` (default `72`), and the last-good-read timestamp is retained in the MQTT registry.
@@ -81,6 +89,23 @@ sudo ./scripts/install-systemd.sh
 The install script checks for Node.js 18+ (warns if older), validates that `config.json` exists and includes all keys from `config.example.json`, and runs `npm install` if `node_modules` is missing.
 
 Logs: `sudo journalctl -u vehicle-battery-monitor -f`
+
+### Recovering stuck BLE on older Raspberry Pi boards
+
+If your logs show errors like `Timed out opening GATT on BM6`, the bridge already resets its own BLE session and retries. On some older Raspberry Pi / BlueZ combinations the adapter itself stays wedged, so enable command-based recovery in `config.json`:
+
+```json
+"bleRecovery": {
+  "enabled": true,
+  "failureCount": 1,
+  "cooldownSec": 900,
+  "commandTimeoutMs": 30000,
+  "waitAfterMs": 5000,
+  "command": ["systemctl", "restart", "bluetooth"]
+}
+```
+
+The included systemd installer runs the bridge service as root, so `systemctl restart bluetooth` can run without prompting. If you run the bridge as a non-root user, use a recovery command that user is allowed to execute non-interactively.
 
 ## Notes
 

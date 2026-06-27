@@ -3,6 +3,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { spawn } = require("child_process");
 const mqtt = require("mqtt");
 
 const { buildAllSensorConfigs, macToId } = require("./mqtt_ha_discovery");
@@ -22,6 +23,10 @@ process.on("uncaughtException", (err) => {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function formatErr(err) {
@@ -51,6 +56,86 @@ function isTransientReadConnectionError(errOrMessage) {
     text.includes("timed out starting notifications") ||
     text.includes("timed out writing read command")
   );
+}
+
+function parseCommand(rawCommand) {
+  if (!Array.isArray(rawCommand)) return [];
+  return rawCommand.map((part) => String(part || "").trim()).filter(Boolean);
+}
+
+function parseBleRecoveryConfig(cfg) {
+  const raw = cfg && typeof cfg === "object" ? cfg : {};
+  const failureCount = Number.isFinite(raw.failureCount) ? Math.max(1, Math.floor(raw.failureCount)) : 1;
+  const cooldownSec = Number.isFinite(raw.cooldownSec) ? Math.max(0, raw.cooldownSec) : 900;
+  const commandTimeoutMs = Number.isFinite(raw.commandTimeoutMs) ? Math.max(1000, raw.commandTimeoutMs) : 30000;
+  const waitAfterMs = Number.isFinite(raw.waitAfterMs) ? Math.max(0, raw.waitAfterMs) : 5000;
+  return {
+    enabled: Boolean(raw.enabled),
+    failureCount,
+    cooldownSec,
+    commandTimeoutMs,
+    waitAfterMs,
+    command: parseCommand(raw.command),
+  };
+}
+
+function formatCommandForLog(command) {
+  return command.map((part) => (/\s/.test(part) ? JSON.stringify(part) : part)).join(" ");
+}
+
+function limitOutput(text) {
+  const trimmed = String(text || "").trim();
+  if (trimmed.length <= 1200) return trimmed;
+  return `${trimmed.slice(0, 1200)}...`;
+}
+
+function runCommand(command, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    if (!Array.isArray(command) || !command.length) {
+      reject(new Error("Missing recovery command."));
+      return;
+    }
+
+    const child = spawn(command[0], command.slice(1), { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      child.kill("SIGTERM");
+      setTimeout(() => {
+        if (!settled) child.kill("SIGKILL");
+      }, 3000).unref();
+      finish(new Error(`Timed out after ${timeoutMs} ms.`));
+    }, timeoutMs);
+
+    function finish(err, result) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (err) reject(err);
+      else resolve(result);
+    }
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString("utf8");
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk.toString("utf8");
+    });
+    child.on("error", (err) => finish(err));
+    child.on("close", (code, signal) => {
+      if (settled) return;
+      const output = limitOutput(stderr || stdout);
+      if (code === 0) {
+        finish(null, { stdout: limitOutput(stdout), stderr: limitOutput(stderr) });
+        return;
+      }
+      const exitLabel = signal ? `signal ${signal}` : `exit code ${code}`;
+      finish(new Error(output ? `Recovery command failed with ${exitLabel}: ${output}` : `Recovery command failed with ${exitLabel}.`));
+    });
+  });
 }
 
 function normalizeBridgeId(value) {
@@ -181,6 +266,7 @@ function loadConfig(args) {
     pollTimeLocal,
     failureBackoffSec: Number.isFinite(cfg.failureBackoffSec) ? cfg.failureBackoffSec : 300,
     unavailableAfterHours: Number.isFinite(cfg.unavailableAfterHours) ? cfg.unavailableAfterHours : 72,
+    bleRecovery: parseBleRecoveryConfig(cfg.bleRecovery),
   };
 }
 
@@ -267,6 +353,8 @@ async function main() {
   const expireAfterSec = Math.max(0, Math.round(Math.max(scheduledPollIntervalSec * 2 + 30, unavailableAfterMs / 1000 + 30)));
   const modelWarningOnce = new Set();
   let scanRunning = false;
+  let bleConnectionFailureCount = 0;
+  let lastBleRecoveryMs = 0;
 
   const bridgeState = {
     status: "starting",
@@ -325,6 +413,13 @@ async function main() {
         readTimeoutMs: config.readTimeoutMs,
         pollTimeLocal: config.pollTimeLocal.label,
         unavailableAfterHours: config.unavailableAfterHours,
+        bleRecovery: config.bleRecovery.enabled
+          ? {
+              failureCount: config.bleRecovery.failureCount,
+              cooldownSec: config.bleRecovery.cooldownSec,
+              command: formatCommandForLog(config.bleRecovery.command),
+            }
+          : "disabled",
         scheduledDailyIntervalSec: scheduledPollIntervalSec,
       });
     } catch (err) {
@@ -341,6 +436,63 @@ async function main() {
   let stopping = false;
   let bleLock = Promise.resolve();
 
+  function shouldRunBleAdapterRecovery(address, message) {
+    const recovery = config.bleRecovery;
+    if (!recovery.enabled) return false;
+
+    bleConnectionFailureCount += 1;
+    if (bleConnectionFailureCount < recovery.failureCount) {
+      logInfo("BLE adapter recovery threshold not reached.", {
+        address,
+        failures: bleConnectionFailureCount,
+        threshold: recovery.failureCount,
+      });
+      return false;
+    }
+
+    if (!recovery.command.length) {
+      logError("BLE adapter recovery skipped because bleRecovery.command is empty.", { address, error: message });
+      return false;
+    }
+
+    const cooldownMs = recovery.cooldownSec * 1000;
+    const elapsedMs = lastBleRecoveryMs ? Date.now() - lastBleRecoveryMs : Infinity;
+    if (elapsedMs < cooldownMs) {
+      logInfo("BLE adapter recovery skipped during cooldown.", {
+        address,
+        cooldownRemainingSec: Math.ceil((cooldownMs - elapsedMs) / 1000),
+      });
+      return false;
+    }
+
+    return true;
+  }
+
+  async function runBleAdapterRecovery(address, message) {
+    const recovery = config.bleRecovery;
+    const commandLabel = formatCommandForLog(recovery.command);
+    lastBleRecoveryMs = Date.now();
+    bleConnectionFailureCount = 0;
+
+    logInfo("Running BLE adapter recovery command.", { address, error: message, command: commandLabel });
+    await setBridgeState({ status: "recovering_ble", last_error: `BLE recovery after: ${message}` });
+
+    try {
+      const result = await runCommand(recovery.command, recovery.commandTimeoutMs);
+      logInfo("BLE adapter recovery command finished.", {
+        command: commandLabel,
+        stdout: result.stdout || "",
+        stderr: result.stderr || "",
+      });
+      if (recovery.waitAfterMs > 0) await wait(recovery.waitAfterMs);
+      await setBridgeState({ status: "polling", last_error: "" });
+    } catch (err) {
+      const error = formatErr(err);
+      logError("BLE adapter recovery command failed.", error);
+      await setBridgeState({ status: "polling", last_error: error });
+    }
+  }
+
   function withBleLock(task) {
     const run = async () => task();
     const next = bleLock.then(run, run);
@@ -355,11 +507,14 @@ async function main() {
         get ble() {
           return ble;
         },
-        async reset() {
+        async reset(options = {}) {
           try {
             await ble.destroy();
           } catch {
             // ignore
+          }
+          if (options.recoverAdapter) {
+            await runBleAdapterRecovery(options.address || "", options.error || "unknown BLE connection error");
           }
           ble = await createBleClient();
           return ble;
@@ -542,7 +697,8 @@ async function main() {
               if (isTransientReadConnectionError(message)) {
                 try {
                   logInfo("Resetting BLE session after connection error.", { address, error: message });
-                  ble = await session.reset();
+                  const recoverAdapter = shouldRunBleAdapterRecovery(address, message);
+                  ble = await session.reset({ recoverAdapter, address, error: message });
                   const remainingAddresses = eligibleAddresses.slice(index);
                   found = await ble.findDevicesByAddress(remainingAddresses, Math.min(config.connectScanMs, 12000));
                   const refreshedHandle = found.get(address);
@@ -566,6 +722,7 @@ async function main() {
           const readOkAt = nowIso();
           device.lastReadOkAt = readOkAt;
           lastReadOkMsByAddress.set(address, Date.parse(readOkAt));
+          bleConnectionFailureCount = 0;
           await publishState(mqttClient, address, reading);
           await upsertRegistry(device);
           await setAvailability(address, true);
@@ -580,8 +737,25 @@ async function main() {
           });
           okCount += 1;
         } catch (err) {
+          const failureMessage = formatErr(err);
+          if (isTransientReadConnectionError(failureMessage)) {
+            try {
+              const recoverAdapter = shouldRunBleAdapterRecovery(address, failureMessage);
+              if (recoverAdapter) {
+                ble = await session.reset({ recoverAdapter, address, error: failureMessage });
+                const remainingAddresses = eligibleAddresses.slice(index + 1);
+                if (remainingAddresses.length) {
+                  found = await ble.findDevicesByAddress(remainingAddresses, Math.min(config.connectScanMs, 12000));
+                }
+              }
+            } catch {
+              // ignore and report the original read failure
+            }
+          } else {
+            bleConnectionFailureCount = 0;
+          }
           // eslint-disable-next-line no-console
-          console.error(`Read failed (${address}):`, err && err.message ? err.message : err);
+          console.error(`Read failed (${address}):`, failureMessage);
           await refreshAvailabilityFromHistory(address);
           backoffUntilMsByAddress.set(address, Date.now() + Math.max(1, config.failureBackoffSec) * 1000);
           failCount += 1;

@@ -12,5 +12,13 @@
   "readTimeoutMs": 20000,
   "pollTimeLocal": "02:00",
   "failureBackoffSec": 300,
-  "unavailableAfterHours": 72
+  "unavailableAfterHours": 72,
+  "bleRecovery": {
+    "enabled": false,
+    "failureCount": 1,
+    "cooldownSec": 900,
+    "commandTimeoutMs": 30000,
+    "waitAfterMs": 5000,
+    "command": ["systemctl", "restart", "bluetooth"]
+  }
 }
