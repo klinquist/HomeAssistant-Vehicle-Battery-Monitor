@@ -593,6 +593,29 @@ async function main() {
     await setAvailability(address, shouldRemainAvailable(address));
   }
 
+  function failureBackoffMs() {
+    return Math.max(1, config.failureBackoffSec) * 1000;
+  }
+
+  function setReadFailureBackoff(address) {
+    const untilMs = Date.now() + failureBackoffMs();
+    backoffUntilMsByAddress.set(address, untilMs);
+    return untilMs;
+  }
+
+  function getNextFailureRetryDelayMs(addresses = Array.from(known.keys())) {
+    const now = Date.now();
+    let nextRetryMs = Infinity;
+    for (const address of addresses) {
+      const backoffUntilMs = backoffUntilMsByAddress.get(address) || 0;
+      if (backoffUntilMs > now && backoffUntilMs < nextRetryMs) {
+        nextRetryMs = backoffUntilMs;
+      }
+    }
+    if (!Number.isFinite(nextRetryMs)) return 0;
+    return Math.max(1000, nextRetryMs - now);
+  }
+
   async function ensureDiscoveryPublished(address) {
     const device = known.get(address);
     if (!device) return;
@@ -635,7 +658,23 @@ async function main() {
       return true;
     });
 
-    if (!eligibleAddresses.length) return;
+    if (!eligibleAddresses.length) {
+      const retryDelayMs = getNextFailureRetryDelayMs(addresses);
+      await setBridgeState({
+        status: "idle",
+        last_poll_finished: nowIso(),
+        last_poll_ok: 0,
+        last_poll_fail: 0,
+      });
+      if (addresses.length) {
+        logInfo("Poll skipped because all known devices are in failure backoff.", {
+          retryInSec: retryDelayMs ? Math.ceil(retryDelayMs / 1000) : 0,
+        });
+      } else {
+        logInfo("Poll skipped because no devices are known.");
+      }
+      return { okCount: 0, failCount: 0, retryDelayMs };
+    }
 
     const pollCounts = await withBleSession(async (session) => {
       let ble = session.ble;
@@ -666,6 +705,7 @@ async function main() {
         if (!handle) {
           await refreshAvailabilityFromHistory(address);
           logError(`Read failed (${address}).`, "Device not found in connect scan.");
+          setReadFailureBackoff(address);
           failCount += 1;
           continue;
         }
@@ -714,7 +754,7 @@ async function main() {
                 }
               }
               // Retry once with same model after short delay
-              await new Promise((r) => setTimeout(r, 1500));
+              await wait(1500);
               reading = await attemptRead(2, model);
             }
           }
@@ -757,12 +797,13 @@ async function main() {
           // eslint-disable-next-line no-console
           console.error(`Read failed (${address}):`, failureMessage);
           await refreshAvailabilityFromHistory(address);
-          backoffUntilMsByAddress.set(address, Date.now() + Math.max(1, config.failureBackoffSec) * 1000);
+          setReadFailureBackoff(address);
           failCount += 1;
         }
       }
       return { okCount, failCount };
     });
+    const retryDelayMs = pollCounts.failCount > 0 ? getNextFailureRetryDelayMs(addresses) : 0;
 
     await setBridgeState({
       status: "idle",
@@ -770,7 +811,12 @@ async function main() {
       last_poll_ok: pollCounts.okCount,
       last_poll_fail: pollCounts.failCount,
     });
-    logInfo("Poll finished.", { ok: pollCounts.okCount, fail: pollCounts.failCount });
+    logInfo("Poll finished.", {
+      ok: pollCounts.okCount,
+      fail: pollCounts.failCount,
+      retryInSec: retryDelayMs ? Math.ceil(retryDelayMs / 1000) : 0,
+    });
+    return { okCount: pollCounts.okCount, failCount: pollCounts.failCount, retryDelayMs };
   }
 
   function getNextScheduledPollDelayMs() {
@@ -788,16 +834,19 @@ async function main() {
 
     const tick = async () => {
       if (stopping) return;
+      let pollResult = null;
       try {
-        await pollOnce();
+        pollResult = await pollOnce();
       } catch (err) {
         // eslint-disable-next-line no-console
         console.error("Poll failed:", err && err.message ? err.message : err);
       } finally {
         if (!stopping) {
-          const delayMs = getNextScheduledPollDelayMs();
+          const retryDelayMs = pollResult && pollResult.retryDelayMs > 0 ? pollResult.retryDelayMs : 0;
+          const delayMs = retryDelayMs || getNextScheduledPollDelayMs();
+          const reason = retryDelayMs ? "failure_backoff" : "daily_time";
           timer = setTimeout(tick, delayMs);
-          await announceNextPoll(delayMs, "daily_time");
+          await announceNextPoll(delayMs, reason);
         }
       }
     };

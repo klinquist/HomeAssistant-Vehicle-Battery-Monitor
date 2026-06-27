@@ -38,7 +38,7 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
 - `connectScanMs`: How long to scan for known devices before polling.
 - `readTimeoutMs`: Timeout waiting for a device to respond.
 - `pollTimeLocal`: Daily local poll time in `HH:MM` 24-hour format. Default `02:00`.
-- `failureBackoffSec`: Backoff time after a failed read before trying that device again.
+- `failureBackoffSec`: Backoff time after a failed read before trying that device again. Failed scheduled polls also schedule the next poll after this backoff instead of waiting for the next daily poll.
 - `unavailableAfterHours`: How long to keep the last successful reading available in Home Assistant after read failures. Default `72`.
 - `bleRecovery`: Optional command-based recovery for older Raspberry Pi / BlueZ stacks that wedge after GATT timeouts.
   - `enabled`: Set to `true` to run the recovery command after connection-layer BLE failures such as `Timed out opening GATT`.
@@ -55,6 +55,7 @@ Edit `config.json` to set your MQTT broker URL (Home Assistant host) and any use
   - `Update BM6/BM7 Now`: immediately polls all known devices and updates sensor states
 - The bridge also polls on a schedule.
   Default behavior: one startup poll shortly after launch, then a daily poll at `02:00` local time.
+- If a scheduled poll fails, the bridge schedules a retry after `failureBackoffSec`; after a successful poll it returns to the daily schedule.
 - If a read fails, the last retained sensor values stay available until the device has gone longer than `unavailableAfterHours` without a successful read.
 - For visibility/debugging:
   - Use the `BM6/BM7 Bridge Status` sensor (attributes include last scan/poll times and counts).
@@ -70,6 +71,7 @@ This is meant to run continuously as a `systemd` service. On Raspberry Pi OS, `s
 Newest entries first. Keep this section short and focused on user-visible behavior or operational debugging changes.
 
 - 2026-06-27: Added optional `bleRecovery` command support. When enabled, repeated connection-layer BLE failures can restart the local Bluetooth stack before the bridge recreates its BLE client.
+- 2026-06-27: Failed scheduled polls now schedule a retry after `failureBackoffSec` instead of waiting until the next daily poll.
 - 2026-03-21: Updated the README to make `systemd` the preferred long-running deployment method, matching the included installer script for Raspberry Pi OS.
 - 2026-03-21: Added `pollTimeLocal` with a default daily run time of `02:00` local time, so scheduled polls are tied to a clock time instead of 24 hours after process launch.
 - 2026-03-21: Added configurable delayed unavailability. Device sensors now stay available until a successful read is older than `unavailableAfterHours` (default `72`), and the last-good-read timestamp is retained in the MQTT registry.
